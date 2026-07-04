@@ -1,7 +1,6 @@
 # user-order-service
 
-PostgreSQL/Supabase-compatible clone of the original MySQL `server/user-order-creation`
-service for **Alluvi**, a peptide research-chemical storefront. It's a single Express
+PostgreSQL/Supabase-compatible  single Express
 app that owns customer checkout, payments, wallet/affiliate rewards, auth, anti-fraud
 tooling, and a support chatbot.
 
@@ -20,8 +19,7 @@ tooling, and a support chatbot.
 - Newsletter/giveaway signup
 - A CORS proxy for a third-party visitor-tracking API ("Fengyu")
 
-It talks to Postgres exclusively through `db-adapter.js`, a `mysql2/promise`-compatible
-shim that lets the MySQL-flavored SQL in `index.js` run unmodified against Postgres.
+It talks to Postgres exclusively through `db-adapter.js`.
 
 ## Project structure
 
@@ -45,8 +43,7 @@ shim that lets the MySQL-flavored SQL in `index.js` run unmodified against Postg
 npm install
 ```
 
-Create a `.env` file (or rely on a shared `/var/www/.env` a few directories up — see
-below) with at least:
+Create a `.env` file (or rely on a shared `/var/www/.env`) with at least:
 
 ```
 DATABASE_URL=postgres://user:password@host:5432/dbname
