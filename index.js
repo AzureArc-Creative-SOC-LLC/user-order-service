@@ -5957,23 +5957,15 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 // Reset Password - Update password with token
 
 app.post('/api/auth/reset-password', async (req, res) => {
-
   const { token, password } = req.body
 
-
-
   if (!token || !password) {
-
     return res.status(400).json({ error: 'Token and password are required' })
-
   }
 
 
-
   if (password.length < 6) {
-
     return res.status(400).json({ error: 'Password must be at least 6 characters long' })
-
   }
 
 
@@ -5983,9 +5975,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
     // Find valid token
 
     const [tokenRows] = await pool.execute(
-
       'SELECT * FROM password_reset_tokens WHERE token = ? AND expires_at > NOW() AND used_at IS NULL',
-
       [token]
 
     )
@@ -5994,12 +5984,8 @@ app.post('/api/auth/reset-password', async (req, res) => {
 
     const resetToken = tokenRows[0]
 
-
-
     if (!resetToken) {
-
       return res.status(400).json({ error: 'Invalid or expired reset token' })
-
     }
 
 
@@ -6007,15 +5993,9 @@ app.post('/api/auth/reset-password', async (req, res) => {
     // Hash new password
 
     const hashedPassword = await bcrypt.hash(password, 10)
-
-
-
     // Update user password
-
     await pool.execute(
-
       'UPDATE users SET password_hash = ?, updated_at = NOW() WHERE id = ?',
-
       [hashedPassword, resetToken.user_id]
 
     )
@@ -6025,11 +6005,8 @@ app.post('/api/auth/reset-password', async (req, res) => {
     // Mark token as used
 
     await pool.execute(
-
       'UPDATE password_reset_tokens SET used_at = NOW() WHERE id = ?',
-
       [resetToken.id]
-
     )
 
 

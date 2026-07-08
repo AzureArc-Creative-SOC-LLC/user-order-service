@@ -2,13 +2,14 @@
   "info": {
     "name": "User Order Service API Tests",
     "_postman_id": "d4e5f6a7-b8c9-4012-def1-234567890abc",
-    "description": "Full API test suite for user-order-service (Postgres/Supabase clone of server/user-order-creation). Run with the matching environment file.\n\nIMPORTANT — this hits the REAL PRODUCTION SUPABASE DATABASE (same DB as admin-service/tracking-service/payment-verification-service). Requests in this collection are deliberately scoped to validation-error paths, 404s on obviously-fake IDs (e.g. 'THIS-ORDER-DOES-NOT-EXIST-XYZ'), and read-only lookups — nothing here creates a real user, order, or affiliate by default.\n\nA few endpoints unavoidably write a low-value log row even on 'empty' requests (fingerprint/collect). That's noted on the request itself.\n\nThe 'Requires Real Fixtures' folder is for authenticated routes (wallet/affiliate) that need a real JWT. Set the collection variable 'authToken' (a real token from POST /api/auth/login) to exercise the happy path; left blank, those requests still run and correctly assert 401.\n\nKNOWN BUG (not a test mistake): PUT and DELETE /api/user-orders/:orderNumber currently return 500 'syntax error at or near \"LIMIT\"' instead of 404, because the original MySQL code used `UPDATE ... LIMIT 1` / `DELETE ... LIMIT 1`, which Postgres does not support. The db-adapter.js shim does not currently strip LIMIT from UPDATE/DELETE statements. The tests for these two routes assert the CORRECT expected behavior (404) and will fail (red) until that's fixed — this is intentional, so the suite catches the regression rather than enshrining the bug.",
+    "description": "Full API test suite for user-order-service (Postgres/Supabase clone of server/user-order-creation). Run with the matching environment file.\n\nIMPORTANT — this hits the REAL PRODUCTION SUPABASE DATABASE (same DB as admin-service/tracking-service/payment-verification-service). Requests in this collection are deliberately scoped to validation-error paths, 404s on obviously-fake IDs (e.g. 'THIS-ORDER-DOES-NOT-EXIST-XYZ'), and read-only lookups — nothing here creates a real user, order, or affiliate by default.\n\nA few endpoints unavoidably write a low-value log row even on 'empty' requests (fingerprint/collect). That's noted on the request itself.\n\nEXCEPTION — 'Auth — Requires Real Fixtures' contains a Register + Login happy-path pair that runs against ONE fixed fixture account (collection variables 'testEmail' / 'testPassword', defaulted to a dummy @user-order-service.test address). POST /api/auth/register upserts by email (see index.js), so re-running this is idempotent — it never creates a new row after the first run, it just updates the same one. The Login request stores the returned JWT into the 'authToken' collection variable, which is what lets the rest of the 'Requires Real Fixtures' folders (wallet/affiliate) exercise their real 200 happy paths instead of just asserting 401.\n\nThe 'Requires Real Fixtures' folder is for authenticated routes (wallet/affiliate) that need a real JWT. Set the collection variable 'authToken' (a real token from POST /api/auth/login) to exercise the happy path; left blank, those requests still run and correctly assert 401.\n\nKNOWN BUG (not a test mistake): PUT and DELETE /api/user-orders/:orderNumber currently return 500 'syntax error at or near \"LIMIT\"' instead of 404, because the original MySQL code used `UPDATE ... LIMIT 1` / `DELETE ... LIMIT 1`, which Postgres does not support. The db-adapter.js shim does not currently strip LIMIT from UPDATE/DELETE statements. The tests for these two routes assert the CORRECT expected behavior (404) and will fail (red) until that's fixed — this is intentional, so the suite catches the regression rather than enshrining the bug.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     { "key": "baseUrl", "value": "http://localhost:5003" },
     { "key": "testOrderNumber", "value": "" },
-    { "key": "testEmail", "value": "" },
+    { "key": "testEmail", "value": "postman-fixture-user@user-order-service.test" },
+    { "key": "testPassword", "value": "PostmanFixture123!" },
     { "key": "authToken", "value": "" }
   ],
   "item": [
@@ -221,6 +222,82 @@
             "pm.test('Error message', () => {",
             "  pm.expect(pm.response.json()).to.have.property('error', 'Invalid or expired reset token');",
             "});"
+          ]}}]
+        }
+      ]
+    },
+
+    {
+      "name": "Auth — Requires Real Fixtures",
+      "item": [
+        {
+          "name": "Register — Fixed fixture account → 201 (creates/updates real user)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\"name\":\"Postman Test Fixture\",\"email\":\"{{testEmail}}\",\"password\":\"{{testPassword}}\",\"date_of_birth\":\"1990-01-01\",\"nationality\":\"US\",\"country_of_residence\":\"US\"}", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/api/auth/register", "host": ["{{baseUrl}}"], "path": ["api","auth","register"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "// WRITES to production DB — but only ever touches ONE fixed fixture row.",
+            "// /api/auth/register upserts by email (see index.js), so re-running this",
+            "// updates the same user instead of inserting a new one each time.",
+            "pm.test('Status 201', () => pm.response.to.have.status(201));",
+            "pm.test('Returns token and matching user', () => {",
+            "  const j = pm.response.json();",
+            "  pm.expect(j.success).to.be.true;",
+            "  pm.expect(j).to.have.property('token').that.is.a('string');",
+            "  pm.expect(j.user).to.have.property('email', pm.collectionVariables.get('testEmail'));",
+            "});",
+            "pm.collectionVariables.set('authToken', pm.response.json().token);"
+          ]}}]
+        },
+        {
+          "name": "Login — Fixed fixture account → 200",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\"email\":\"{{testEmail}}\",\"password\":\"{{testPassword}}\"}", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/api/auth/login", "host": ["{{baseUrl}}"], "path": ["api","auth","login"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "// Depends on the Register request above having run at least once so this",
+            "// fixture account exists with a known password.",
+            "pm.test('Status 200', () => pm.response.to.have.status(200));",
+            "pm.test('Returns token and matching user', () => {",
+            "  const j = pm.response.json();",
+            "  pm.expect(j.success).to.be.true;",
+            "  pm.expect(j).to.have.property('token').that.is.a('string');",
+            "  pm.expect(j.user).to.have.property('email', pm.collectionVariables.get('testEmail'));",
+            "});",
+            "// Store the token so the rest of the 'Requires Real Fixtures' requests in this",
+            "// collection can exercise their real 200 happy paths automatically.",
+            "pm.collectionVariables.set('authToken', pm.response.json().token);"
+          ]}}]
+        },
+        {
+          "name": "Forgot Password — Existing email (testEmail) → 200 (email sent)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\"email\":\"{{testEmail}}\"}", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/api/auth/forgot-password", "host": ["{{baseUrl}}"], "path": ["api","auth","forgot-password"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "if (!pm.collectionVariables.get('testEmail')) {",
+            "  pm.test('testEmail not set — still 200 generic message (unknown-email path)', () => {",
+            "    pm.response.to.have.status(200);",
+            "    pm.expect(pm.response.json().success).to.be.true;",
+            "  });",
+            "  console.warn('Set collection variable testEmail (a real existing user email) to also cover the reset-token-written / email-sent path.');",
+            "} else {",
+            "  pm.test('Status 200', () => pm.response.to.have.status(200));",
+            "  pm.test('Generic success message (reset token written, email sent)', () => {",
+            "    const j = pm.response.json();",
+            "    pm.expect(j.success).to.be.true;",
+            "    pm.expect(j.message).to.include('If an account exists');",
+            "  });",
+            "}"
           ]}}]
         }
       ]
