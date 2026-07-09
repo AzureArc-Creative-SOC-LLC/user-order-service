@@ -5015,7 +5015,7 @@ app.post(['/api/user-orders', '/api/user-orders/'], upload.single('paymentScreen
 
           }
 
-        }
+      
 
 
 
@@ -5065,9 +5065,11 @@ app.post(['/api/user-orders', '/api/user-orders/'], upload.single('paymentScreen
 
       }
 
+    }
+
     } catch (emailErr) {
 
-      console.error('Reservation email failed:', emailErr?.message || emailErr)
+      console.error('[user-orders] post-checkout emails failed', emailErr?.message || emailErr)
 
     }
 
