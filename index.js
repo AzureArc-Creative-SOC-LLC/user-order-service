@@ -13,7 +13,8 @@ import { fengyuProxy } from './fengyu-proxy.js';
 
 import { fileURLToPath } from 'url'
 
-import { buildHasInvoiceMaskedItems, sendAffiliateRewardNotificationEmail, sendAffiliateWelcomeEmail, sendDeliveryInformationEmail, sendEmail, sendHasInvoiceEmail, sendKlymePaymentRejectedEmail, sendKlymePaymentSuccessfulEmail, sendNewsletterEntryEmail, sendPaymentDeclinedEmail, sendPaymentReminderEmail, sendPaymentScreenshotReceivedEmail, sendPaymentSuccessfulEmail, sendStatusUpdateEmail } from '../emailService.js'
+import { buildHasInvoiceMaskedItems, sendAffiliateRewardNotificationEmail, sendAffiliateWelcomeEmail, sendDeliveryInformationEmail, sendEmail, sendHasInvoiceEmail, sendKlymePaymentRejectedEmail, sendKlymePaymentSuccessfulEmail, sendNewsletterEntryEmail, sendOrderConfirmationEmail, sendPaymentDeclinedEmail, sendPaymentReminderEmail, sendPaymentScreenshotReceivedEmail, sendPaymentSuccessfulEmail, sendStatusUpdateEmail } from './emailService.js'
+import { sendBrandedOrderConfirmation } from './order-emails.js'
 
 
 
@@ -1186,37 +1187,15 @@ app.use(express.json({ limit: '5mb' }))
 app.use(
 
   cors({
-
-    origin: (origin, callback) => {
-      // Allow non-browser requests (no Origin header)
-      if (!origin) return callback(null, true)
-
-      const configured = corsOrigin === '*'
-        ? ['*']
-        : corsOrigin.split(',').map((s) => s.trim()).filter(Boolean)
-
-      // Always allow common local dev origins for testing.
-      const devAllowList = [
-        'http://localhost:5173',
-        'http://127.0.0.1:5173',
-        'http://localhost:3000',
-        'http://127.0.0.1:3000',
-      ]
-
-      if (configured.includes('*')) return callback(null, true)
-
-      const allowed = new Set([...configured, ...devAllowList])
-      return callback(null, allowed.has(String(origin)))
-    },
-
+    // Global CORS: reflect any origin so this API is callable from anywhere in the world.
+    origin: true,
     credentials: true,
-
   })
 
 )
 
 // Handle preflight requests for all routes
-app.options('*', cors())
+app.options('*', cors({ origin: true, credentials: true }))
 
 
 
@@ -5018,6 +4997,39 @@ app.post(['/api/user-orders', '/api/user-orders/'], upload.single('paymentScreen
       
 
 
+
+        // Brand-themed confirmation: if the order came from one of the white-label
+        // storefronts (matched by request Origin), send its themed email via Resend.
+        // Falls back to the generic Alluvi confirmation when no storefront matches.
+        let brandedOk = false
+        try {
+          const b = await sendBrandedOrderConfirmation({ req, to: customerEmail, payload, orderNumber, customerName })
+          brandedOk = b?.success === true
+          console.log('[user-orders] branded order email', { orderNumber, to: customerEmail, ...b })
+        } catch (e) {
+          console.error('[user-orders] branded order email failed (continuing)', e?.message || String(e))
+        }
+
+        if (!brandedOk) try {
+          const r = await sendOrderConfirmationEmail({
+            customerEmail,
+            customerName,
+            orderNumber,
+            total: Number.isFinite(totalNumber) ? Number(totalNumber.toFixed(2)) : undefined,
+            shippingAddress: String(payload.address || payload.shippingAddress || '').trim(),
+            shippingCity: String(payload.city || payload.shippingCity || '').trim(),
+            shippingZip: String(payload.postcode || payload.shippingZip || '').trim(),
+            shippingCountry: String(payload.country || payload.shippingCountry || '').trim(),
+          })
+          console.log('[user-orders] order confirmation email result', {
+            orderNumber,
+            ok: !!r?.success,
+            messageId: r?.messageId || null,
+            error: r?.error || null,
+          })
+        } catch (e) {
+          console.error('[user-orders] order confirmation email failed (continuing)', e?.message || String(e))
+        }
 
         if (paymentLink) {
           try {
