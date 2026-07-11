@@ -3427,7 +3427,7 @@ async function persistOrderFromCheckout(connection, payload, opts) {
 
   const productExistsCache = new Map()
 
-
+  const confirmedItems = []
 
   // If this checkout contains the special test product (ID 32), ensure it exists in products
   // so order_items.product_id FK constraints are satisfied.
@@ -3512,11 +3512,28 @@ async function persistOrderFromCheckout(connection, payload, opts) {
 
     )
 
+    confirmedItems.push({ name, sku: sku || null, quantity, unitPrice: safeUnit, lineTotal })
+
   }
 
 
 
-  return { orderId, orderNumber }
+  return {
+    orderId,
+    orderNumber,
+    customerName,
+    customerEmail: email,
+    phone,
+    shippingAddress: address,
+    shippingCity: city,
+    shippingPostcode: postcode,
+    shippingCountry: country,
+    currency: 'GBP',
+    subtotal,
+    discountAmount,
+    total: finalTotal,
+    items: confirmedItems,
+  }
 
 }
 
@@ -4977,7 +4994,7 @@ app.post(['/api/user-orders', '/api/user-orders/'], upload.single('paymentScreen
 
           }
 
-        }
+      
 
 
 
@@ -5060,9 +5077,11 @@ app.post(['/api/user-orders', '/api/user-orders/'], upload.single('paymentScreen
 
       }
 
+    }
+
     } catch (emailErr) {
 
-      console.error('Reservation email failed:', emailErr?.message || emailErr)
+      console.error('[user-orders] post-checkout emails failed', emailErr?.message || emailErr)
 
     }
 
