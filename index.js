@@ -15,6 +15,7 @@ import { fileURLToPath } from 'url'
 
 import { buildHasInvoiceMaskedItems, sendAffiliateRewardNotificationEmail, sendAffiliateWelcomeEmail, sendDeliveryInformationEmail, sendEmail, sendHasInvoiceEmail, sendKlymePaymentRejectedEmail, sendKlymePaymentSuccessfulEmail, sendNewsletterEntryEmail, sendOrderConfirmationEmail, sendPaymentDeclinedEmail, sendPaymentReminderEmail, sendPaymentScreenshotReceivedEmail, sendPaymentSuccessfulEmail, sendStatusUpdateEmail } from './emailService.js'
 import { sendBrandedOrderConfirmation, sendBrandedPasswordResetEmail, resolveBrandTheme, renderPasswordResetEmailHtml, DEFAULT_THEME } from './order-emails.js'
+import { createDomainMiddleware } from './domainMiddleware.js'
 
 
 
@@ -54,24 +55,26 @@ if (!loadedDotenvPath) {
 
 
 
-async function ensureTestProduct32Exists(connection) {
+async function ensureTestProduct32Exists(connection, domainId) {
   try {
     // Minimal row to satisfy FK: products.id is referenced by order_items.product_id.
-    // Keep slug/sku unique and stable.
+    // Keep slug/sku unique and stable. domain_id isn't included in the ON DUPLICATE
+    // KEY UPDATE list, so whichever storefront's checkout creates this shared
+    // sandbox fixture first keeps it - not worth reassigning on every request.
     await connection.execute(
       `INSERT INTO products (
         id, name, slug, sku, price, currency, in_stock,
         image_url, image_alt, short_desc, long_desc,
-        is_enabled, display_order, klyme_enabled, created_at, updated_at
+        is_enabled, display_order, klyme_enabled, created_at, updated_at, domain_id
       ) VALUES (
         32, 'Test Product (Dummy)', 'test-product-32', 'TEST-GBP1-32', 1.00, 'GBP', TRUE,
         NULL, 'Test Product', 'Sandbox payment testing', 'This is a dummy product used only for sandbox testing. Price is £1 GBP.',
-        FALSE, 0, FALSE, NOW(), NOW()
+        FALSE, 0, FALSE, NOW(), NOW(), ?
       )
       ON DUPLICATE KEY UPDATE
         name = VALUES(name),
         updated_at = NOW()`,
-      []
+      [domainId]
     )
   } catch (e) {
     console.error('[ensureTestProduct32Exists] failed', e?.message || String(e))
@@ -377,7 +380,7 @@ async function grantAffiliateRewardForOrder(connection, orderNumber, opts) {
   }
 
   const [orderRows] = await connection.execute(
-    'SELECT id, order_number, customer_email, promo_code, payment_status FROM orders WHERE order_number = ? LIMIT 1',
+    'SELECT id, order_number, customer_email, promo_code, payment_status, domain_id FROM orders WHERE order_number = ? LIMIT 1',
     [orderNumber]
   )
   const order = Array.isArray(orderRows) && orderRows[0] ? orderRows[0] : null
@@ -475,7 +478,7 @@ async function grantAffiliateRewardForOrder(connection, orderNumber, opts) {
   )
 
   await connection.execute(
-    'INSERT INTO promo_redemptions (order_id, order_number, promo_code, affiliate_user_id, customer_email, reward_amount, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO promo_redemptions (order_id, order_number, promo_code, affiliate_user_id, customer_email, reward_amount, status, created_at, domain_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     [
       Number(order.id),
       String(order.order_number || orderNumber),
@@ -485,6 +488,7 @@ async function grantAffiliateRewardForOrder(connection, orderNumber, opts) {
       safeReward,
       'granted',
       nowMysqlDatetime(),
+      order.domain_id ?? null,
     ]
   )
 
@@ -1134,6 +1138,34 @@ pool.on('error', (err) => {
   console.error('[DB] Pool error:', err)
 })
 
+// Resolves req.domain / req.domainId for every request from this storefront's
+// Origin/Referer (see domainMiddleware.js for why Host doesn't work here).
+const domainMiddleware = createDomainMiddleware({
+  lookupDomain: async (name) => {
+    const [rows] = await pool.execute('SELECT id, status FROM domains WHERE domain_name = ?', [name])
+    return rows[0] || null
+  },
+})
+app.use(domainMiddleware)
+
+// Resolves a domains.id back to its domain_name for building storefront links
+// in code paths with no live req (webhooks, cron/reminder jobs).
+const domainNameCache = new Map() // id -> name, populated lazily
+async function resolveDomainName(domainId) {
+  if (!domainId) return 'alluvi.store'
+  if (domainNameCache.has(domainId)) return domainNameCache.get(domainId)
+  try {
+    const [rows] = await pool.execute('SELECT domain_name FROM domains WHERE id = ? LIMIT 1', [domainId])
+    const name = rows[0]?.domain_name || 'alluvi.store'
+    domainNameCache.set(domainId, name)
+    return name
+  } catch { return 'alluvi.store' }
+}
+function buildStorefrontUrl(domainName, path) {
+  const cleanPath = String(path || '').replace(/^\/+/, '')
+  return `https://${domainName}/${cleanPath}`
+}
+
 
 function requireUserAuth(req, res, next) {
   try {
@@ -1404,22 +1436,24 @@ app.post(['/api/affiliate/request', '/api/auth/affiliate/request'], requireUserA
 
     await connection.execute(
       `INSERT INTO affiliate_requests
-        (user_id, user_email, user_name, first_name, last_name, tiktok_link, status, promo_code, promo_percent, decided_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'approved', ?, ?, ?, ?)`,
-      [userId, userEmail, userName || null, firstName, lastName, tiktokLink, promoCode, percent, now, now]
+        (user_id, user_email, user_name, first_name, last_name, tiktok_link, status, promo_code, promo_percent, decided_at, created_at, domain_id)
+       VALUES (?, ?, ?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?)`,
+      [userId, userEmail, userName || null, firstName, lastName, tiktokLink, promoCode, percent, now, now, req.domainId]
     )
 
+    // domain_id intentionally excluded from ON DUPLICATE KEY UPDATE: keep the domain recorded at original creation.
     await connection.execute(
-      `INSERT INTO promo_codes (code, percent, source, user_id, is_active, created_at)
-       VALUES (?, ?, 'affiliate', ?, 1, ?)
+      `INSERT INTO promo_codes (code, percent, source, user_id, is_active, created_at, domain_id)
+       VALUES (?, ?, 'affiliate', ?, 1, ?, ?)
        ON DUPLICATE KEY UPDATE percent = VALUES(percent), is_active = 1, user_id = VALUES(user_id), updated_at = CURRENT_TIMESTAMP`,
-      [promoCode, percent, userId, now]
+      [promoCode, percent, userId, now, req.domainId]
     )
 
+    // domain_id intentionally excluded from ON DUPLICATE KEY UPDATE: keep the domain recorded at original creation.
     await connection.execute(
       `INSERT INTO affiliates
-        (user_id, promo_code, promo_percent, reward_amount, status, first_name, last_name, tiktok_link, approved_at, created_at)
-       VALUES (?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?)
+        (user_id, promo_code, promo_percent, reward_amount, status, first_name, last_name, tiktok_link, approved_at, created_at, domain_id)
+       VALUES (?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
          promo_code = VALUES(promo_code),
          promo_percent = VALUES(promo_percent),
@@ -1430,7 +1464,7 @@ app.post(['/api/affiliate/request', '/api/auth/affiliate/request'], requireUserA
          tiktok_link = VALUES(tiktok_link),
          approved_at = VALUES(approved_at),
          updated_at = CURRENT_TIMESTAMP`,
-      [userId, promoCode, percent, AFFILIATE_DEFAULT_REWARD, firstName, lastName, tiktokLink, now, now]
+      [userId, promoCode, percent, AFFILIATE_DEFAULT_REWARD, firstName, lastName, tiktokLink, now, now, req.domainId]
     )
 
     await connection.commit()
@@ -2949,7 +2983,9 @@ async function persistOrderFromCheckout(connection, payload, opts) {
 
   if (!email || !email.includes('@')) throw new Error('Missing/invalid required field: email')
 
-
+  // Always the server-detected domain (see domainMiddleware.js) - a domain_id
+  // in payload is never read, so the frontend can't inject/override it.
+  const domainId = opts?.domainId ?? null
 
   await assertNotBlacklisted(connection, payload)
 
@@ -3048,9 +3084,9 @@ async function persistOrderFromCheckout(connection, payload, opts) {
 
   await connection.execute(
 
-    `INSERT INTO users (name, email, password_hash, phone, role)
+    `INSERT INTO users (name, email, password_hash, phone, role, domain_id)
 
-     VALUES (?, ?, ?, ?, 'user')
+     VALUES (?, ?, ?, ?, 'user', ?)
 
      ON DUPLICATE KEY UPDATE
 
@@ -3060,7 +3096,7 @@ async function persistOrderFromCheckout(connection, payload, opts) {
 
        role=IF(role='admin', role, 'user')`,
 
-    [customerName, email, importedPasswordHash, phone]
+    [customerName, email, importedPasswordHash, phone, domainId]
 
   )
 
@@ -3147,7 +3183,7 @@ async function persistOrderFromCheckout(connection, payload, opts) {
 
        items_text, payment_screenshot_filename, payment_screenshot_url,
 
-       bank_account_used, reserved_at, submitted_at, created_at
+       bank_account_used, reserved_at, submitted_at, created_at, domain_id
 
      ) VALUES (
 
@@ -3167,7 +3203,7 @@ async function persistOrderFromCheckout(connection, payload, opts) {
 
        ?, ?, ?,
 
-       ?, NULL, ?, ?
+       ?, NULL, ?, ?, ?
 
      )
 
@@ -3269,6 +3305,8 @@ async function persistOrderFromCheckout(connection, payload, opts) {
 
       createdAt,
 
+      domainId,
+
     ]
 
   )
@@ -3287,9 +3325,9 @@ async function persistOrderFromCheckout(connection, payload, opts) {
 
   await connection.execute(
 
-    `INSERT INTO payments (order_id, provider, provider_id, amount, currency, status, raw_response, created_at)
+    `INSERT INTO payments (order_id, provider, provider_id, amount, currency, status, raw_response, created_at, domain_id)
 
-     VALUES (?, 'Manual', ?, ?, 'GBP', 'pending', NULL, ?)
+     VALUES (?, 'Manual', ?, ?, 'GBP', 'pending', NULL, ?, ?)
 
      ON DUPLICATE KEY UPDATE
 
@@ -3303,7 +3341,7 @@ async function persistOrderFromCheckout(connection, payload, opts) {
 
        updated_at=CURRENT_TIMESTAMP`,
 
-    [orderId, providerId, total, createdAt]
+    [orderId, providerId, total, createdAt, domainId]
 
   )
 
@@ -3329,7 +3367,7 @@ async function persistOrderFromCheckout(connection, payload, opts) {
   // so order_items.product_id FK constraints are satisfied.
   try {
     const maybe32 = (Array.isArray(itemsArray) ? itemsArray : []).some((it) => String(it?.productId ?? it?.product_id ?? it?.id ?? '').trim() === '32')
-    if (maybe32) await ensureTestProduct32Exists(connection)
+    if (maybe32) await ensureTestProduct32Exists(connection, domainId)
   } catch {
     // ignore
   }
@@ -4352,11 +4390,11 @@ app.post('/api/payment-capture/upload', captureUpload.single('paymentScreenshot'
 
             await pool.execute(
 
-              `INSERT INTO payment_capture_requests (order_id, email, token_hash, expires_at, used_at, created_at)
+              `INSERT INTO payment_capture_requests (order_id, email, token_hash, expires_at, used_at, created_at, domain_id)
 
-                VALUES (?, ?, ?, ?, NULL, ?)`,
+                VALUES (?, ?, ?, ?, NULL, ?, ?)`,
 
-              [Number(order.id), customerEmail, tokenHash, expiresAt, createdAt]
+              [Number(order.id), customerEmail, tokenHash, expiresAt, createdAt, req.domainId]
 
             )
 
@@ -4507,7 +4545,7 @@ app.post(['/api/user-orders', '/api/user-orders/'], upload.single('paymentScreen
 
 
 
-    const out = await persistOrderFromCheckout(connection, payload, { providerId: payload.providerId })
+    const out = await persistOrderFromCheckout(connection, payload, { providerId: payload.providerId, domainId: req.domainId })
 
 
 
@@ -4736,11 +4774,11 @@ app.post(['/api/user-orders', '/api/user-orders/'], upload.single('paymentScreen
 
               ;[ins] = await connection.execute(
 
-                `INSERT INTO payment_capture_requests (order_id, email, token_hash, expires_at, used_at, email_sent_at, email_send_error, created_at)
+                `INSERT INTO payment_capture_requests (order_id, email, token_hash, expires_at, used_at, email_sent_at, email_send_error, created_at, domain_id)
 
-                  VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?)`,
+                  VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
 
-                [orderId, String(payload.email || '').trim().toLowerCase(), tokenHash, expiresAt, createdAt]
+                [orderId, String(payload.email || '').trim().toLowerCase(), tokenHash, expiresAt, createdAt, req.domainId]
 
               )
 
@@ -4760,11 +4798,11 @@ app.post(['/api/user-orders', '/api/user-orders/'], upload.single('paymentScreen
 
                   ;[ins] = await connection.execute(
 
-                    `INSERT INTO payment_capture_requests (order_id, email, token_hash, expires_at, used_at, email_sent_at, email_send_error, created_at)
+                    `INSERT INTO payment_capture_requests (order_id, email, token_hash, expires_at, used_at, email_sent_at, email_send_error, created_at, domain_id)
 
-                    VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?)`,
+                    VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
 
-                    [orderId, String(payload.email || '').trim().toLowerCase(), tokenHash, expiresAt, createdAt]
+                    [orderId, String(payload.email || '').trim().toLowerCase(), tokenHash, expiresAt, createdAt, req.domainId]
 
                   )
 
@@ -4870,7 +4908,7 @@ app.post(['/api/user-orders', '/api/user-orders/'], upload.single('paymentScreen
 
           try {
 
-            const trackUrl = `${(PUBLIC_API_BASE_URL || 'https://www.alluvi.store').replace(/\/$/, '')}/track-order`
+            const trackUrl = buildStorefrontUrl(req.domain || 'alluvi.store', 'track-order')
 
             console.log('[user-orders] payment_processor order; will still send emails', {
 
@@ -5033,9 +5071,9 @@ app.get('/api/user-orders/by-email', async (req, res) => {
 
     const [rows] = await pool.execute(
 
-      'SELECT * FROM orders WHERE LOWER(TRIM(customer_email)) = ? ORDER BY created_at DESC LIMIT 200',
+      'SELECT * FROM orders WHERE LOWER(TRIM(customer_email)) = ? AND domain_id = ? ORDER BY created_at DESC LIMIT 200',
 
-      [email]
+      [email, req.domainId]
 
     )
 
@@ -5142,6 +5180,18 @@ app.put('/api/user-orders/:orderNumber', async (req, res) => {
 
 
     if (!updates.length) return res.status(400).json({ error: 'No updatable fields provided' })
+
+
+
+    const [domainCheckRows] = await pool.execute('SELECT domain_id FROM orders WHERE order_number = ? LIMIT 1', [orderNumber])
+
+    const domainCheckOrder = Array.isArray(domainCheckRows) && domainCheckRows[0] ? domainCheckRows[0] : null
+
+    if (domainCheckOrder?.domain_id != null && req.domainId != null && domainCheckOrder.domain_id !== req.domainId) {
+
+      return res.status(409).json({ error: 'domain_mismatch', message: 'This order belongs to a different domain.' })
+
+    }
 
 
 
@@ -5275,9 +5325,9 @@ app.post('/api/auth/register', async (req, res) => {
 
       const [result] = await pool.execute(
 
-        'INSERT INTO users (name, email, password_hash, date_of_birth, nationality, country_of_residence, role) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO users (name, email, password_hash, date_of_birth, nationality, country_of_residence, role, domain_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
 
-        [name, email, hashedPassword, date_of_birth, nationality, country_of_residence, 'user']
+        [name, email, hashedPassword, date_of_birth, nationality, country_of_residence, 'user', req.domainId]
 
       )
 
@@ -6555,9 +6605,7 @@ app.post('/api/klyme/create-payment', async (req, res) => {
 
     // Create redirect URL for success/failure
 
-    const frontendUrl = env('FRONTEND_URL', 'https://alluvi.store')
-
-    const redirectUrl = `${frontendUrl}/checkout/klyme-callback`
+    const redirectUrl = buildStorefrontUrl(req.domain || 'alluvi.store', 'checkout/klyme-callback')
 
 
 
@@ -6599,10 +6647,10 @@ app.post('/api/klyme/create-payment', async (req, res) => {
 
       try {
         await connection.execute(
-          `INSERT INTO payments (order_id, provider, provider_id, amount, currency, status, raw_response, created_at)
-           VALUES (?, 'Credits', ?, ?, ?, 'success', NULL, NOW())
+          `INSERT INTO payments (order_id, provider, provider_id, amount, currency, status, raw_response, created_at, domain_id)
+           VALUES (?, 'Credits', ?, ?, ?, 'success', NULL, NOW(), ?)
            ON DUPLICATE KEY UPDATE amount = VALUES(amount), currency = VALUES(currency), status = 'success', updated_at = NOW()`,
-          [order.id, `CREDITS-${String(order.order_number || orderId)}`, 0, currency || 'GBP']
+          [order.id, `CREDITS-${String(order.order_number || orderId)}`, 0, currency || 'GBP', req.domainId]
         )
       } catch {
         // ignore
@@ -6679,9 +6727,9 @@ app.post('/api/klyme/create-payment', async (req, res) => {
 
         session_id, order_id, payment_provider_id, customer_email, customer_name,
 
-        order_data, payment_url, success_url, failure_url, status, created_at, expires_at
+        order_data, payment_url, success_url, failure_url, status, created_at, expires_at, domain_id
 
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NOW(), DATE_ADD(NOW(), INTERVAL 1 HOUR))
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NOW(), DATE_ADD(NOW(), INTERVAL 1 HOUR), ?)
 
       ON DUPLICATE KEY UPDATE
 
@@ -6710,6 +6758,8 @@ app.post('/api/klyme/create-payment', async (req, res) => {
         redirectUrl,
 
         redirectUrl,
+
+        req.domainId,
 
       ]
 
@@ -6745,9 +6795,7 @@ app.post('/api/klyme/create-payment', async (req, res) => {
 
 
 
-          const publicBase = String(env('PUBLIC_API_BASE_URL', env('FRONTEND_URL', 'https://www.alluvi.store')) || 'https://www.alluvi.store').replace(/\/$/, '')
-
-          const trackUrl = `${publicBase}/track-order`
+          const trackUrl = buildStorefrontUrl(req.domain || 'alluvi.store', 'track-order')
 
 
 
@@ -6810,9 +6858,9 @@ app.post('/api/klyme/create-payment', async (req, res) => {
 
     await connection.execute(
 
-      `INSERT INTO payments (order_id, provider, provider_id, amount, currency, status, raw_response, created_at)
+      `INSERT INTO payments (order_id, provider, provider_id, amount, currency, status, raw_response, created_at, domain_id)
 
-       VALUES (?, 'Klyme', ?, ?, ?, 'pending', ?, NOW())
+       VALUES (?, 'Klyme', ?, ?, ?, 'pending', ?, NOW(), ?)
 
        ON DUPLICATE KEY UPDATE
 
@@ -6824,7 +6872,7 @@ app.post('/api/klyme/create-payment', async (req, res) => {
 
          updated_at = NOW()`,
 
-      [order.id, paymentUuid, Number(payableAmount).toFixed(2), currency || 'GBP', JSON.stringify(klymeResponse.data)]
+      [order.id, paymentUuid, Number(payableAmount).toFixed(2), currency || 'GBP', JSON.stringify(klymeResponse.data), req.domainId]
 
     )
 
@@ -7123,9 +7171,9 @@ app.post('/api/klyme/webhook', async (req, res) => {
 
 
 
-        const publicBase = (PUBLIC_API_BASE_URL || 'https://www.alluvi.store').replace(/\/$/, '')
+        const domainName = await resolveDomainName(order?.domain_id)
 
-        const trackUrl = `${publicBase}/track-order`
+        const trackUrl = buildStorefrontUrl(domainName, 'track-order')
 
 
 
@@ -7369,20 +7417,20 @@ app.get('/api/klyme/verify-payment/:uuid', async (req, res) => {
         let orderId = null
         if (ref) {
           const [oRows] = await connection.execute(
-            'SELECT id, order_number, customer_email, customer_name FROM orders WHERE order_number LIKE ? OR REPLACE(order_number, "ALU-", "") LIKE ? ORDER BY id DESC LIMIT 1',
+            'SELECT id, order_number, customer_email, customer_name, domain_id FROM orders WHERE order_number LIKE ? OR REPLACE(order_number, "ALU-", "") LIKE ? ORDER BY id DESC LIMIT 1',
             [`%${ref}%`, `%${ref}%`]
           )
           const o = Array.isArray(oRows) && oRows[0] ? oRows[0] : null
           orderId = o?.id || null
 
           if (orderId) {
-            const frontendUrl = env('FRONTEND_URL', 'https://alluvi.store')
-            const redirectUrl = `${frontendUrl}/checkout/klyme-callback`
+            const domainName = await resolveDomainName(o?.domain_id)
+            const redirectUrl = buildStorefrontUrl(domainName, 'checkout/klyme-callback')
             await connection.execute(
               `INSERT INTO payment_sessions (
                 session_id, order_id, payment_provider_id, customer_email, customer_name,
-                order_data, payment_url, success_url, failure_url, status, created_at, expires_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NOW(), DATE_ADD(NOW(), INTERVAL 1 HOUR))
+                order_data, payment_url, success_url, failure_url, status, created_at, expires_at, domain_id
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NOW(), DATE_ADD(NOW(), INTERVAL 1 HOUR), ?)
               ON DUPLICATE KEY UPDATE updated_at = NOW()`,
               [
                 uuid,
@@ -7394,6 +7442,7 @@ app.get('/api/klyme/verify-payment/:uuid', async (req, res) => {
                 redirectUrl,
                 redirectUrl,
                 redirectUrl,
+                o?.domain_id ?? null,
               ]
             )
           }
@@ -7566,8 +7615,8 @@ app.get('/api/klyme/verify-payment/:uuid', async (req, res) => {
             const customerName = String(freshSession?.customer_name || order?.customer_name || '').trim() || 'Customer'
             const orderNumber = String(order?.order_number || '').trim()
 
-            const publicBase = (PUBLIC_API_BASE_URL || 'https://www.alluvi.store').replace(/\/$/, '')
-            const trackUrl = `${publicBase}/track-order`
+            const domainName = await resolveDomainName(order?.domain_id)
+            const trackUrl = buildStorefrontUrl(domainName, 'track-order')
 
             if (sessionStatus === 'success' && orderNumber) {
               try {
@@ -7853,7 +7902,7 @@ const aabanpayCreatePaymentHandler = async (req, res) => {
     }
 
     // Create redirect URLs
-    const frontendUrl = env('FRONTEND_URL', 'https://alluvi.store');
+    const frontendUrl = env('FRONTEND_URL', '') || buildStorefrontUrl(req.domain || 'alluvi.store', '').replace(/\/$/, '');
     const successUrl = returnUrl || `${frontendUrl}/checkout/aabanpay-callback?status=success`;
     const failureUrl = cancelUrl || `${frontendUrl}/checkout/aabanpay-callback?status=cancelled`;
     const webhookUrl = `${env('PUBLIC_API_BASE_URL', frontendUrl)}/api/aabanpay/webhook`;
@@ -7906,8 +7955,8 @@ const aabanpayCreatePaymentHandler = async (req, res) => {
     await connection.execute(
       `INSERT INTO payment_sessions (
         session_id, order_id, payment_provider_id, customer_email, customer_name,
-        order_data, payment_url, success_url, failure_url, status, created_at, expires_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NOW(), DATE_ADD(NOW(), INTERVAL 1 HOUR))
+        order_data, payment_url, success_url, failure_url, status, created_at, expires_at, domain_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NOW(), DATE_ADD(NOW(), INTERVAL 1 HOUR), ?)
       ON DUPLICATE KEY UPDATE
         payment_provider_id = VALUES(payment_provider_id),
         status = 'pending',
@@ -7922,19 +7971,20 @@ const aabanpayCreatePaymentHandler = async (req, res) => {
         paymentUrl,
         successUrl,
         failureUrl,
+        req.domainId,
       ]
     );
 
     // Store in payments table
     await connection.execute(
-      `INSERT INTO payments (order_id, provider, provider_id, amount, currency, status, raw_response, created_at)
-       VALUES (?, 'AabanPay', ?, ?, ?, 'pending', ?, NOW())
+      `INSERT INTO payments (order_id, provider, provider_id, amount, currency, status, raw_response, created_at, domain_id)
+       VALUES (?, 'AabanPay', ?, ?, ?, 'pending', ?, NOW(), ?)
        ON DUPLICATE KEY UPDATE
          amount = VALUES(amount),
          currency = VALUES(currency),
          status = 'pending',
          updated_at = NOW()`,
-      [order.id, sessionId, Number(amount).toFixed(2), currency || 'GBP', JSON.stringify(data)]
+      [order.id, sessionId, Number(amount).toFixed(2), currency || 'GBP', JSON.stringify(data), req.domainId]
     );
 
     return res.json({
@@ -8300,10 +8350,10 @@ app.post('/api/user-orders/aabanpay/charge', async (req, res) => {
     // Persist payment record (do not store PAN/CVV)
     try {
       await connection.execute(
-        `INSERT INTO payments (order_id, provider, provider_id, amount, currency, status, raw_response, created_at)
-         VALUES (?, 'AabanPay', ?, ?, ?, ?, ?, NOW())
+        `INSERT INTO payments (order_id, provider, provider_id, amount, currency, status, raw_response, created_at, domain_id)
+         VALUES (?, 'AabanPay', ?, ?, ?, ?, ?, NOW(), ?)
          ON DUPLICATE KEY UPDATE status = VALUES(status), raw_response = VALUES(raw_response), updated_at = NOW()`,
-        [Number(order.id), String(txnId || `AABANPAY-${order.order_number}`), Number(order.total || 0), String(order.currency || 'GBP'), status || 'PENDING', JSON.stringify(data || {})]
+        [Number(order.id), String(txnId || `AABANPAY-${order.order_number}`), Number(order.total || 0), String(order.currency || 'GBP'), status || 'PENDING', JSON.stringify(data || {}), req.domainId]
       )
     } catch {
       // ignore
@@ -8315,8 +8365,8 @@ app.post('/api/user-orders/aabanpay/charge', async (req, res) => {
       await connection.execute(
         `INSERT INTO payment_sessions (
           session_id, order_id, payment_provider_id, customer_email, customer_name,
-          order_data, payment_url, success_url, failure_url, status, created_at, expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, NOW(), DATE_ADD(NOW(), INTERVAL 1 HOUR))
+          order_data, payment_url, success_url, failure_url, status, created_at, expires_at, domain_id
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, NOW(), DATE_ADD(NOW(), INTERVAL 1 HOUR), ?)
         ON DUPLICATE KEY UPDATE
           payment_provider_id = VALUES(payment_provider_id),
           customer_email = VALUES(customer_email),
@@ -8331,6 +8381,7 @@ app.post('/api/user-orders/aabanpay/charge', async (req, res) => {
           String(order.customer_name || '').trim(),
           JSON.stringify({ orderId: order.order_number, amount: Number(order.total || 0).toFixed(2), currency: String(order.currency || 'GBP') }),
           String(status || 'PENDING').toLowerCase() === 'approved' ? 'success' : (String(status || '').toLowerCase().includes('declin') ? 'failed' : 'pending'),
+          req.domainId,
         ]
       )
     } catch {
@@ -8350,8 +8401,7 @@ app.post('/api/user-orders/aabanpay/charge', async (req, res) => {
         const customerEmail = String(order.customer_email || '').trim()
         const customerName = String(order.customer_name || '').trim() || 'Customer'
         const orderNumber = String(order.order_number || '').trim()
-        const publicBase = (PUBLIC_API_BASE_URL || 'https://www.alluvi.store').replace(/\/$/, '')
-        const trackUrl = `${publicBase}/track-order`
+        const trackUrl = buildStorefrontUrl(req.domain || 'alluvi.store', 'track-order')
 
         if (customerEmail && customerEmail.includes('@') && orderNumber) {
           let sRow = {}
@@ -8428,8 +8478,7 @@ app.post('/api/user-orders/aabanpay/charge', async (req, res) => {
       const customerEmail = String(order.customer_email || '').trim()
       const customerName = String(order.customer_name || '').trim() || 'Customer'
       const orderNumber = String(order.order_number || '').trim()
-      const publicBase = (PUBLIC_API_BASE_URL || 'https://www.alluvi.store').replace(/\/$/, '')
-      const trackUrl = `${publicBase}/track-order`
+      const trackUrl = buildStorefrontUrl(req.domain || 'alluvi.store', 'track-order')
       const reason = String(info || status || 'Payment rejected').trim()
 
       if (customerEmail && customerEmail.includes('@') && orderNumber) {
@@ -8495,7 +8544,7 @@ app.get('/api/user-orders/aabanpay/callback', async (req, res) => {
 
     connection = await pool.getConnection()
     const [orderRows] = await connection.execute(
-      'SELECT id, order_number, customer_email, customer_name, total, currency FROM orders WHERE order_number = ? LIMIT 1',
+      'SELECT id, order_number, customer_email, customer_name, total, currency, domain_id FROM orders WHERE order_number = ? LIMIT 1',
       [extOrderId]
     )
     const order = Array.isArray(orderRows) && orderRows[0] ? orderRows[0] : null
@@ -8508,8 +8557,8 @@ app.get('/api/user-orders/aabanpay/callback', async (req, res) => {
       await connection.execute(
         `INSERT INTO payment_sessions (
           session_id, order_id, payment_provider_id, customer_email, customer_name,
-          order_data, payment_url, success_url, failure_url, status, created_at, expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, NOW(), DATE_ADD(NOW(), INTERVAL 1 HOUR))
+          order_data, payment_url, success_url, failure_url, status, created_at, expires_at, domain_id
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, NOW(), DATE_ADD(NOW(), INTERVAL 1 HOUR), ?)
         ON DUPLICATE KEY UPDATE
           payment_provider_id = VALUES(payment_provider_id),
           customer_email = VALUES(customer_email),
@@ -8524,6 +8573,7 @@ app.get('/api/user-orders/aabanpay/callback', async (req, res) => {
           String(order.customer_name || '').trim(),
           JSON.stringify({ orderId: String(order.order_number || extOrderId), amount: Number(order.total || 0).toFixed(2), currency: String(order.currency || 'GBP') }),
           txStatus === 'APPROVED' ? 'success' : (txStatus === 'DECLINED' ? 'failed' : 'pending'),
+          order.domain_id ?? null,
         ]
       )
     } catch {
@@ -8544,8 +8594,8 @@ app.get('/api/user-orders/aabanpay/callback', async (req, res) => {
         const customerEmail = String(order.customer_email || '').trim()
         const customerName = String(order.customer_name || '').trim() || 'Customer'
         const orderNumber = String(order.order_number || extOrderId).trim()
-        const publicBase = (PUBLIC_API_BASE_URL || 'https://www.alluvi.store').replace(/\/$/, '')
-        const trackUrl = `${publicBase}/track-order`
+        const domainName = await resolveDomainName(order.domain_id)
+        const trackUrl = buildStorefrontUrl(domainName, 'track-order')
 
         if (customerEmail && customerEmail.includes('@') && orderNumber) {
           let sRow = {}
@@ -8615,8 +8665,8 @@ app.get('/api/user-orders/aabanpay/callback', async (req, res) => {
         const customerEmail = String(order.customer_email || '').trim()
         const customerName = String(order.customer_name || '').trim() || 'Customer'
         const orderNumber = String(order.order_number || extOrderId).trim()
-        const publicBase = (PUBLIC_API_BASE_URL || 'https://www.alluvi.store').replace(/\/$/, '')
-        const trackUrl = `${publicBase}/track-order`
+        const domainName = await resolveDomainName(order.domain_id)
+        const trackUrl = buildStorefrontUrl(domainName, 'track-order')
         const reason = String(info || txStatus || 'Payment rejected').trim()
 
         if (customerEmail && customerEmail.includes('@') && orderNumber) {
@@ -8654,7 +8704,7 @@ app.get('/api/user-orders/aabanpay/callback', async (req, res) => {
       }
     }
 
-    const frontendUrl = String(env('FRONTEND_URL', 'https://alluvi.store')).replace(/\/$/, '')
+    const frontendUrl = buildStorefrontUrl(await resolveDomainName(order.domain_id), '').replace(/\/$/, '')
 
     const amountText = `£${Number(order.total || 0).toFixed(2)} ${String(order.currency || 'GBP')}`
 
@@ -8792,8 +8842,8 @@ app.post('/api/user-orders/spot-a-fake/submit', spotFakeUpload.array('images', 1
       const submissionId = `SAF-${Date.now()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`
 
       await connection.query(
-        `INSERT INTO spot_a_fake_submissions (submission_id, latitude, longitude, accuracy, location_timestamp, user_agent, image_paths, ip_address)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO spot_a_fake_submissions (submission_id, latitude, longitude, accuracy, location_timestamp, user_agent, image_paths, ip_address, domain_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           submissionId,
           parseFloat(latitude) || 0,
@@ -8803,6 +8853,7 @@ app.post('/api/user-orders/spot-a-fake/submit', spotFakeUpload.array('images', 1
           (userAgent || '').substring(0, 500),
           JSON.stringify(imagePaths),
           String(ip).substring(0, 64),
+          req.domainId,
         ]
       )
 
@@ -8983,9 +9034,9 @@ app.post('/api/user-orders/verify-product/upload', verifyProductUpload.single('p
     try {
       connection = await pool.getConnection()
       await connection.execute(
-        `INSERT INTO verify_product_submissions (submission_id, email, image_filename, latitude, longitude, accuracy, location_timestamp, user_agent, ip_address)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [submissionId, email, file.filename, latitude, longitude, accuracy, locationTimestamp, userAgent, String(ip).substring(0, 64)]
+        `INSERT INTO verify_product_submissions (submission_id, email, image_filename, latitude, longitude, accuracy, location_timestamp, user_agent, ip_address, domain_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [submissionId, email, file.filename, latitude, longitude, accuracy, locationTimestamp, userAgent, String(ip).substring(0, 64), req.domainId]
       )
       connection.release()
     } catch (dbErr) {
@@ -9144,8 +9195,8 @@ app.post('/api/user-orders/fingerprint/collect', async (req, res) => {
           timezone, timezone_offset, language, languages, connection_type,
           gpu_vendor, gpu_renderer, canvas_hash, cookies_enabled, do_not_track,
           battery_level, battery_charging, audio_inputs, audio_outputs, video_inputs,
-          user_agent, platform, vendor, referrer, page_url, webdriver, full_data
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          user_agent, platform, vendor, referrer, page_url, webdriver, full_data, domain_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           String(ip).substring(0, 64),
           (fp.os || '').substring(0, 64),
@@ -9183,6 +9234,7 @@ app.post('/api/user-orders/fingerprint/collect', async (req, res) => {
           (fp.pageUrl || '').substring(0, 500),
           fp.webdriver ? 1 : 0,
           JSON.stringify(fp),
+          req.domainId,
         ]
       )
       connection.release()
@@ -9895,9 +9947,9 @@ app.post('/api/newsletter/subscribe', async (req, res) => {
     try {
       const [result] = await pool.execute(
         `INSERT INTO newsletter_subscribers
-           (email, consent, source, ip_address, user_agent)
-         VALUES (?, ?, ?, ?, ?)`,
-        [email, consent ? 1 : 0, source, ipStr || null, userAgent || null]
+           (email, consent, source, ip_address, user_agent, domain_id)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [email, consent ? 1 : 0, source, ipStr || null, userAgent || null, req.domainId]
       )
 
         // Fire-and-forget entry confirmation email — never block the response on email
