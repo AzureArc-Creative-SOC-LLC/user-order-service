@@ -14,7 +14,7 @@ import { fengyuProxy } from './fengyu-proxy.js';
 import { fileURLToPath } from 'url'
 
 import { buildHasInvoiceMaskedItems, sendAffiliateRewardNotificationEmail, sendAffiliateWelcomeEmail, sendDeliveryInformationEmail, sendEmail, sendHasInvoiceEmail, sendKlymePaymentRejectedEmail, sendKlymePaymentSuccessfulEmail, sendNewsletterEntryEmail, sendOrderConfirmationEmail, sendPaymentDeclinedEmail, sendPaymentReminderEmail, sendPaymentScreenshotReceivedEmail, sendPaymentSuccessfulEmail, sendStatusUpdateEmail } from './emailService.js'
-import { sendBrandedOrderConfirmation } from './order-emails.js'
+import { sendBrandedOrderConfirmation, sendBrandedPasswordResetEmail, resolveBrandTheme, renderPasswordResetEmailHtml, DEFAULT_THEME } from './order-emails.js'
 
 
 
@@ -1058,113 +1058,9 @@ const KLYME_SANDBOX_API_BASE_URLS = env('KLYME_SANDBOX_API_BASE_URLS', '')
 
 
 
-// Password reset email template
-
-function generatePasswordResetEmail(resetLink, userName = 'there') {
-
-  return `
-
-<!DOCTYPE html>
-
-<html lang="en">
-
-<head>
-
-  <meta charset="UTF-8">
-
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-  <title>Reset Your Alluvi Password</title>
-
-  <style>
-
-    body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #000000; color: #ffffff; }
-
-    .email-wrapper { width: 100%; background-color: #000000; padding: 40px 20px; }
-
-    .email-container { max-width: 600px; margin: 0 auto; background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%); border-radius: 16px; overflow: hidden; border: 1px solid rgba(255, 255, 255, 0.1); }
-
-    .email-header { background: linear-gradient(135deg, #00d4aa 0%, #00b894 100%); padding: 40px 30px; text-align: center; }
-
-    .logo { font-size: 32px; font-weight: 900; color: #000000; letter-spacing: -0.5px; margin: 0; }
-
-    .email-body { padding: 40px 30px; }
-
-    .greeting { font-size: 24px; font-weight: 700; color: #ffffff; margin: 0 0 20px 0; }
-
-    .message { font-size: 16px; line-height: 1.6; color: rgba(255, 255, 255, 0.8); margin: 0 0 30px 0; }
-
-    .reset-button { display: inline-block; background: linear-gradient(135deg, #00d4aa 0%, #00b894 100%); color: #000000; text-decoration: none; padding: 16px 40px; border-radius: 8px; font-weight: 700; font-size: 16px; margin: 20px 0; }
-
-    .reset-button:hover { background: linear-gradient(135deg, #00b894 0%, #009874 100%); }
-
-    .security-note { background: rgba(255, 130, 0, 0.1); border-left: 4px solid #ff8200; padding: 16px; margin: 30px 0; border-radius: 4px; }
-
-    .security-note p { margin: 0; font-size: 14px; color: rgba(255, 255, 255, 0.9); }
-
-    .footer { padding: 30px; text-align: center; color: rgba(255, 255, 255, 0.5); font-size: 14px; border-top: 1px solid rgba(255, 255, 255, 0.1); }
-
-  </style>
-
-</head>
-
-<body>
-
-  <div class="email-wrapper">
-
-    <div class="email-container">
-
-      <div class="email-header">
-
-        <h1 class="logo">ALLUVI</h1>
-
-      </div>
-
-      <div class="email-body">
-
-        <h2 class="greeting">Hi ${userName},</h2>
-
-        <p class="message">We received a request to reset your password for your Alluvi account. Click the button below to create a new password:</p>
-
-        <div style="text-align: center;">
-
-          <a href="${resetLink}" class="reset-button">Reset Password</a>
-
-        </div>
-
-        <p class="message">This link will expire in 1 hour for security reasons.</p>
-
-        <div class="security-note">
-
-          <p><strong>⚠️ Security Notice:</strong> If you didn't request this password reset, please ignore this email. Your account is safe and no changes have been made.</p>
-
-        </div>
-
-        <p class="message">If the button doesn't work, copy and paste this link into your browser:</p>
-
-        <p style="word-break: break-all; color: #00d4aa; font-size: 14px;">${resetLink}</p>
-
-      </div>
-
-      <div class="footer">
-
-        <p> 2024 Alluvi Labs. All rights reserved.</p>
-
-        <p>Premium Research Peptides</p>
-
-      </div>
-
-    </div>
-
-  </div>
-
-</body>
-
-</html>
-
-  `.trim()
-
-}
+// Password reset email now uses the shared, per-brand light theme in
+// order-emails.js (renderPasswordResetEmailHtml) instead of a bespoke dark
+// template — see sendBrandedPasswordResetEmail / the /forgot-password route.
 
 
 
@@ -5900,53 +5796,64 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
 
 
-    // Create reset link
+    // Resolve which white-label storefront this request came from (by Origin/
+    // Referer header, same lookup used for branded order confirmations) so the
+    // reset link points at that site's own domain instead of a hardcoded one —
+    // sending it to the wrong domain is what caused the reset link to 404.
 
-    const frontendUrl = env('FRONTEND_URL', 'https://alluvi.store')
+    const theme = resolveBrandTheme(req, {}) || DEFAULT_THEME
+
+    const frontendUrl = `https://${theme.domain}`
 
     const resetLink = `${frontendUrl}/reset-password?token=${resetToken}`
 
 
 
-    // Generate email HTML
+    // Send via Resend so the email comes from that storefront's own domain
+    // (orders@<domain>) instead of the shared Gmail inbox.
 
-    const emailHtml = generatePasswordResetEmail(resetLink, user.name)
+    const branded = await sendBrandedPasswordResetEmail({ req, to: user.email, resetLink, userName: user.name })
+
+    if (!branded?.success) {
+
+      console.warn('[forgot-password] branded send failed/skipped, falling back to SMTP', branded)
+
+      // Fallback: same themed template, sent through the shared Gmail inbox
+      // (can't send "from" an arbitrary domain over SMTP, only Resend can).
+
+      const transporter = nodemailer.createTransport({
+
+        host: 'smtp.gmail.com',
+
+        port: 587,
+
+        secure: false,
+
+        auth: {
+
+          user: env('EMAIL_USER'),
+
+          pass: env('EMAIL_PASS'),
+
+        },
+
+      })
 
 
 
-    // Send email
+      await transporter.sendMail({
 
-    const transporter = nodemailer.createTransport({
+        from: `"${theme.brand}" <${env('EMAIL_USER')}>`,
 
-      host: 'smtp.gmail.com',
+        to: user.email,
 
-      port: 587,
+        subject: `Reset Your ${theme.brand} Password`,
 
-      secure: false,
+        html: renderPasswordResetEmailHtml(theme, { userName: user.name || 'there', resetLink }),
 
-      auth: {
+      })
 
-        user: env('EMAIL_USER'),
-
-        pass: env('EMAIL_PASS'),
-
-      },
-
-    })
-
-
-
-    await transporter.sendMail({
-
-      from: `"Alluvi Labs" <${env('EMAIL_USER')}>`,
-
-      to: user.email,
-
-      subject: 'Reset Your Alluvi Password',
-
-      html: emailHtml,
-
-    })
+    }
 
 
 

@@ -59,10 +59,34 @@ const BRAND_THEMES = {
   'noverafitness.com': {
     key: 'novera', brand: 'Novera', domain: 'noverafitness.com',
     tagline: 'Research-grade peptides & wellness science', currency: '$',
-    bg: '#f8f4ef', surface: '#fbf8f5', heading: '#1a1a1a', body: '#1a1a1a',
+    bg: '#fffefd', surface: '#fbf8f5', heading: '#1a1a1a', body: '#1a1a1a',
     muted: '#6d6d6d', accent: '#536052', accentText: '#f8f4ef', border: '#e6ddd3',
     fontHeading: "'Cormorant Garamond', Georgia, 'Times New Roman', serif",
     fontBody: "Inter, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif",
+  },
+  'jupyterlabs.net': {
+    key: 'jupyterlabs', brand: 'Jupyter Labs', domain: 'jupyterlabs.net',
+    tagline: 'Pharmaceutical rigor, in every vial.', currency: '£',
+    bg: '#ffffff', surface: '#eef5f4', heading: '#14202a', body: '#14202a',
+    muted: '#5f6c6c', accent: '#14b8a6', accentText: '#ffffff', border: '#e1e9e8',
+    fontHeading: "'Space Grotesk', Arial, sans-serif",
+    fontBody: "'Space Grotesk', Arial, sans-serif",
+  },
+  'vorahealthcare.com': {
+    key: 'vora', brand: 'Vora', domain: 'vorahealthcare.com',
+    tagline: 'Premium research peptides for laboratory R&D', currency: '£',
+    bg: '#fffbf3', surface: '#f3f0eb', heading: '#043460', body: '#043460',
+    muted: '#3d6081', accent: '#e1fcad', accentText: '#043460', border: '#e9e4db',
+    fontHeading: "'Playfair Display', Georgia, 'Times New Roman', serif",
+    fontBody: "'Inter Tight', system-ui, sans-serif",
+  },
+  'liorahealthcare.com': {
+    key: 'liora', brand: 'Liora Healthcare', domain: 'liorahealthcare.com',
+    tagline: 'Research-grade peptide supply', currency: 'AED ',
+    bg: '#080808', surface: '#141414', heading: '#ffffff', body: '#ffffff',
+    muted: '#949490', accent: '#ffeec8', accentText: '#080808', border: '#4b4b49',
+    fontHeading: "'Anton', 'Bebas Neue', Impact, sans-serif",
+    fontBody: "'IBM Plex Sans', system-ui, 'Segoe UI', Roboto, sans-serif",
   },
 }
 
@@ -70,6 +94,18 @@ const BRAND_THEMES = {
 const BRAND_BY_KEY = Object.fromEntries(
   Object.values(BRAND_THEMES).map((t) => [t.key, t])
 )
+
+// Fallback theme for requests that don't match a white-label storefront (e.g.
+// the main Alluvi site itself). Same light, card-based look as the branded
+// storefronts get — nothing should ever fall back to a bespoke design.
+const DEFAULT_THEME = {
+  key: 'alluvi', brand: 'Alluvi', domain: 'alluvi.store',
+  tagline: 'Premium Research Peptides', currency: '£',
+  bg: '#ffffff', surface: '#f7f7f8', heading: '#0a0a0a', body: '#0a0a0a',
+  muted: '#6b7280', accent: '#00b894', accentText: '#ffffff', border: '#e5e7eb',
+  fontHeading: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+  fontBody: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+}
 
 function escapeHtml(v) {
   return String(v == null ? '' : v)
@@ -311,4 +347,105 @@ export async function sendBrandedOrderConfirmation({ req, to, payload, orderNumb
   return { ...result, brand: theme.key }
 }
 
-export { BRAND_THEMES, resolveBrandTheme, renderOrderEmailHtml }
+// ── Password reset email — same light, card-based look as order confirmations ──
+
+function renderPasswordResetEmailHtml(theme, { userName, resetLink }) {
+  const t = theme
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="x-apple-disable-message-reformatting"><title>Reset Your ${escapeHtml(t.brand)} Password</title></head>
+<body style="margin:0;padding:0;background:${t.bg};">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">Reset your ${escapeHtml(t.brand)} password — this link expires in 1 hour.</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${t.bg};padding:32px 12px;">
+  <tr><td align="center">
+    <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:600px;background:${t.surface};border:1px solid ${t.border};border-radius:14px;overflow:hidden;">
+      <!-- Header -->
+      <tr><td style="padding:34px 40px 24px;text-align:center;border-bottom:1px solid ${t.border};">
+        <div style="font-family:${t.fontHeading};font-size:24px;letter-spacing:3px;font-weight:700;color:${t.heading};text-transform:uppercase;">${escapeHtml(t.brand)}</div>
+        <div style="font-family:${t.fontBody};font-size:13px;color:${t.muted};margin-top:8px;">${escapeHtml(t.tagline)}</div>
+      </td></tr>
+      <!-- Message -->
+      <tr><td style="padding:36px 40px 8px;">
+        <h1 style="font-family:${t.fontHeading};font-size:26px;line-height:1.25;color:${t.heading};margin:0 0 12px;font-weight:700;">Hi ${escapeHtml(userName)},</h1>
+        <p style="font-family:${t.fontBody};font-size:15px;line-height:1.6;color:${t.muted};margin:0;">We received a request to reset your password for your ${escapeHtml(t.brand)} account. Click the button below to create a new password:</p>
+      </td></tr>
+      <!-- CTA -->
+      <tr><td style="padding:26px 40px 0;text-align:center;">
+        <a href="${resetLink}" style="display:inline-block;background:${t.accent};color:${t.accentText};font-family:${t.fontBody};font-size:15px;font-weight:700;text-decoration:none;text-align:center;padding:15px 36px;border-radius:10px;">Reset Password</a>
+      </td></tr>
+      <tr><td style="padding:22px 40px 0;">
+        <p style="font-family:${t.fontBody};font-size:13px;line-height:1.6;color:${t.muted};margin:0;">This link will expire in 1 hour for security reasons.</p>
+      </td></tr>
+      <!-- Security notice -->
+      <tr><td style="padding:20px 40px 0;">
+        <div style="background:${t.bg};border:1px solid ${t.border};border-left:4px solid ${t.accent};border-radius:8px;padding:14px 16px;">
+          <p style="margin:0;font-family:${t.fontBody};font-size:13px;line-height:1.5;color:${t.body};"><strong>Security notice:</strong> If you didn't request this password reset, you can safely ignore this email — your account is safe and no changes have been made.</p>
+        </div>
+      </td></tr>
+      <!-- Fallback link -->
+      <tr><td style="padding:20px 40px 0;">
+        <p style="font-family:${t.fontBody};font-size:12px;line-height:1.6;color:${t.muted};margin:0 0 4px;">If the button doesn't work, copy and paste this link into your browser:</p>
+        <p style="font-family:${t.fontBody};font-size:12px;word-break:break-all;color:${t.accent};margin:0;">${escapeHtml(resetLink)}</p>
+      </td></tr>
+      <!-- Footer -->
+      <tr><td style="padding:30px 40px 34px;text-align:center;">
+        <div style="font-family:${t.fontBody};font-size:12px;color:${t.muted};line-height:1.6;border-top:1px solid ${t.border};padding-top:20px;">
+          ${escapeHtml(t.brand)} &middot; <a href="https://${escapeHtml(t.domain)}" style="color:${t.muted};">${escapeHtml(t.domain)}</a><br>
+          &copy; ${new Date().getFullYear()} ${escapeHtml(t.brand)}. All rights reserved.
+        </div>
+      </td></tr>
+    </table>
+  </td></tr>
+</table>
+</body></html>`
+}
+
+function renderPasswordResetEmailText(theme, { userName, resetLink }) {
+  const lines = [
+    `${theme.brand} — Reset your password`,
+    ``,
+    `Hi ${userName},`,
+    `We received a request to reset your password for your ${theme.brand} account.`,
+    ``,
+    `Reset your password: ${resetLink}`,
+    ``,
+    `This link will expire in 1 hour for security reasons.`,
+    `If you didn't request this, you can safely ignore this email.`,
+    ``,
+    `${theme.brand} · ${theme.domain}`,
+  ]
+  return lines.join('\n')
+}
+
+// Main entry: send a brand-themed password reset email. Resolves the storefront
+// from the request Origin/Referer (falling back to the generic Alluvi theme so
+// nothing ever falls back to a bespoke, unbranded design), and sends from that
+// storefront's own domain (orders@<domain>) so the "From" address matches the
+// site the user actually signed up on.
+// Returns { skipped } when Resend isn't configured (caller should fall back to
+// a direct-SMTP send). Returns { success } on send.
+export async function sendBrandedPasswordResetEmail({ req, to, resetLink, userName }) {
+  const theme = resolveBrandTheme(req, {}) || DEFAULT_THEME
+
+  const apiKey = process.env.RESEND_API_KEY
+  if (!apiKey) return { skipped: 'no-resend-key', brand: theme.key, theme }
+  if (!to || !String(to).includes('@')) return { skipped: 'no-recipient', brand: theme.key, theme }
+
+  const fromEmail = `orders@${theme.domain}`
+  const from = `${theme.brand} <${fromEmail}>`
+  const subject = `Reset Your ${theme.brand} Password`
+  const view = { userName: userName || 'there', resetLink }
+
+  const result = await sendViaResend({
+    apiKey,
+    from,
+    to,
+    replyTo: fromEmail,
+    subject,
+    html: renderPasswordResetEmailHtml(theme, view),
+    text: renderPasswordResetEmailText(theme, view),
+  })
+  return { ...result, brand: theme.key, theme }
+}
+
+export { BRAND_THEMES, DEFAULT_THEME, resolveBrandTheme, renderOrderEmailHtml, renderPasswordResetEmailHtml, renderPasswordResetEmailText }
