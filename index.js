@@ -5796,7 +5796,8 @@ app.get('/api/auth/verify', async (req, res) => {
 
 app.post('/api/auth/forgot-password', async (req, res) => {
 
-  const { email } = req.body
+  const { email, brand, store, storeKey, storeDomain, storeUrl } = req.body
+  const brandPayload = { brand, store, storeKey, storeDomain, storeUrl }
 
 
 
@@ -5851,7 +5852,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     // reset link points at that site's own domain instead of a hardcoded one —
     // sending it to the wrong domain is what caused the reset link to 404.
 
-    const theme = resolveBrandTheme(req, {}) || DEFAULT_THEME
+    const theme = resolveBrandTheme(req, brandPayload) || DEFAULT_THEME
 
     const frontendUrl = `https://${theme.domain}`
 
@@ -5862,7 +5863,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     // Send via Resend so the email comes from that storefront's own domain
     // (orders@<domain>) instead of the shared Gmail inbox.
 
-    const branded = await sendBrandedPasswordResetEmail({ req, to: user.email, resetLink, userName: user.name })
+    const branded = await sendBrandedPasswordResetEmail({ req, to: user.email, resetLink, userName: user.name, payload: brandPayload })
 
     if (!branded?.success) {
 

@@ -418,14 +418,15 @@ function renderPasswordResetEmailText(theme, { userName, resetLink }) {
 }
 
 // Main entry: send a brand-themed password reset email. Resolves the storefront
-// from the request Origin/Referer (falling back to the generic Alluvi theme so
-// nothing ever falls back to a bespoke, unbranded design), and sends from that
-// storefront's own domain (orders@<domain>) so the "From" address matches the
-// site the user actually signed up on.
+// the same way order confirmations do — explicit payload brand/store/domain
+// first, then the request Origin/Referer (falling back to the generic Alluvi
+// theme so nothing ever falls back to a bespoke, unbranded design) — and sends
+// from that storefront's own domain (orders@<domain>) so the "From" address
+// matches the site the user actually signed up on.
 // Returns { skipped } when Resend isn't configured (caller should fall back to
 // a direct-SMTP send). Returns { success } on send.
-export async function sendBrandedPasswordResetEmail({ req, to, resetLink, userName }) {
-  const theme = resolveBrandTheme(req, {}) || DEFAULT_THEME
+export async function sendBrandedPasswordResetEmail({ req, to, resetLink, userName, payload }) {
+  const theme = resolveBrandTheme(req, payload || {}) || DEFAULT_THEME
 
   const apiKey = process.env.RESEND_API_KEY
   if (!apiKey) return { skipped: 'no-resend-key', brand: theme.key, theme }
