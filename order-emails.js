@@ -40,6 +40,15 @@ const BRAND_THEMES = {
     fontHeading: "Georgia, 'Times New Roman', Times, serif",
     fontBody: "'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
   },
+    'jupyterlabs.net': {
+    key: 'jupyterlabs', brand: 'Jupyter Labs', domain: 'jupyterlabs.net',
+    tagline: 'Pharmaceutical rigor, in every vial.', currency: '£',
+    bg: '#ffffff', surface: '#faf8f4', heading: '#14202a', body: '#14202a',
+    muted: '#5f6c6c', accent: '#4e493e', accentText: '#ffffff', border: '#e1e9e8',
+    fontHeading: "'Space Grotesk', Arial, sans-serif",
+    fontBody: "'Space Grotesk', Arial, sans-serif",
+  },
+
   'vyralabs.co': {
     key: 'vyra', brand: 'Vyra Health', domain: 'vyralabs.co',
     tagline: 'Weight loss, reviewed by clinicians', currency: '$',
@@ -64,14 +73,15 @@ const BRAND_THEMES = {
     fontHeading: "'Cormorant Garamond', Georgia, 'Times New Roman', serif",
     fontBody: "Inter, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif",
   },
-  'jupyterlabs.net': {
-    key: 'jupyterlabs', brand: 'Jupyter Labs', domain: 'jupyterlabs.net',
-    tagline: 'Pharmaceutical rigor, in every vial.', currency: '£',
-    bg: '#ffffff', surface: '#eef5f4', heading: '#14202a', body: '#14202a',
-    muted: '#5f6c6c', accent: '#14b8a6', accentText: '#ffffff', border: '#e1e9e8',
-    fontHeading: "'Space Grotesk', Arial, sans-serif",
-    fontBody: "'Space Grotesk', Arial, sans-serif",
-  },
+  // 'jupyterlabs.net': {
+  //   key: 'jupyterlabs', brand: 'Jupyter Labs', domain: 'jupyterlabs.net',
+  //   tagline: 'Pharmaceutical rigor, in every vial.', currency: '£',
+  //   bg: '#ffffff', surface: '#eef5f4', heading: '#14202a', body: '#14202a',
+  //   muted: '#5f6c6c', accent: '#14b8a6', accentText: '#ffffff', border: '#e1e9e8',
+  //   fontHeading: "'Space Grotesk', Arial, sans-serif",
+  //   fontBody: "'Space Grotesk', Arial, sans-serif",
+  // },
+  
   'vorahealthcare.com': {
     key: 'vora', brand: 'Vora', domain: 'vorahealthcare.com',
     tagline: 'Premium research peptides for laboratory R&D', currency: '£',
