@@ -98,7 +98,7 @@ const BRAND_THEMES = {
     fontHeading: "'Space Grotesk', Arial, sans-serif",
     fontBody: "'Space Grotesk', Arial, sans-serif",
   },
-    'peptivalabs.uk/': {
+  'peptivalabs.uk': {
     key: 'peptiva', brand: 'Peptiva Labs', domain: 'peptivalabs.uk',
     tagline: 'Engineered for research precision', currency: '$',
     bg: '#ffffff', surface: '#faf8f4', heading: '#14202a', body: '#14202a',
