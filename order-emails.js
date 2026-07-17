@@ -17,7 +17,7 @@ const RESEND_ENDPOINT = 'https://api.resend.com/emails'
 // Keyed by bare domain (no www). Each storefront is matched by its Origin host.
 const BRAND_THEMES = {
   'luxenlabs.shop': {
-    key: 'luxen', brand: 'LUXEN', domain: 'luxenlabs.shop',
+    key: 'luxen', brand: 'Luxen', domain: 'luxenlabs.shop',
     tagline: 'Advancing lab research', currency: '$',
     bg: '#ffffff', surface: '#faf8f4', heading: '#14202a', body: '#14202a',
     muted: '#5f6c6c', accent: '#4e493e', accentText: '#ffffff', border: '#e1e9e8',
@@ -58,7 +58,7 @@ const BRAND_THEMES = {
     fontBody: "'Space Grotesk', Arial, sans-serif",
   },
   'lumivexlabs.co': {
-    key: 'lumivex', brand: 'Lumivex', domain: 'lumivexlabs.co',
+    key: 'lumivex', brand: 'Lumivex Labs', domain: 'lumivexlabs.co',
     tagline: 'High-purity research compounds, precisely made.', currency: '$',
     bg: '#ffffff', surface: '#faf8f4', heading: '#14202a', body: '#14202a',
     muted: '#5f6c6c', accent: '#4e493e', accentText: '#ffffff', border: '#e1e9e8',
@@ -66,7 +66,7 @@ const BRAND_THEMES = {
     fontBody: "'Space Grotesk', Arial, sans-serif",
   },
   'noverafitness.com': {
-    key: 'novera', brand: 'Novera', domain: 'noverafitness.com',
+    key: 'novera', brand: 'Novera Fitneess', domain: 'noverafitness.com',
     tagline: 'Research-grade peptides & wellness science', currency: '$',
     bg: '#ffffff', surface: '#faf8f4', heading: '#14202a', body: '#14202a',
     muted: '#5f6c6c', accent: '#4e493e', accentText: '#ffffff', border: '#e1e9e8',
@@ -83,7 +83,7 @@ const BRAND_THEMES = {
   // },
   
   'vorahealthcare.com': {
-    key: 'vora', brand: 'Vora', domain: 'vorahealthcare.com',
+    key: 'vora', brand: 'Vora Healthcare', domain: 'vorahealthcare.com',
     tagline: 'Premium research peptides for laboratory R&D', currency: '$',
     bg: '#ffffff', surface: '#faf8f4', heading: '#14202a', body: '#14202a',
     muted: '#5f6c6c', accent: '#4e493e', accentText: '#ffffff', border: '#e1e9e8',
@@ -93,6 +93,14 @@ const BRAND_THEMES = {
   'liorahealthcare.com': {
     key: 'liora', brand: 'Liora Healthcare', domain: 'liorahealthcare.com',
     tagline: 'Research-grade peptide supply', currency: '$ ',
+    bg: '#ffffff', surface: '#faf8f4', heading: '#14202a', body: '#14202a',
+    muted: '#5f6c6c', accent: '#4e493e', accentText: '#ffffff', border: '#e1e9e8',
+    fontHeading: "'Space Grotesk', Arial, sans-serif",
+    fontBody: "'Space Grotesk', Arial, sans-serif",
+  },
+    'peptivalabs.uk/': {
+    key: 'peptiva', brand: 'Peptiva Labs', domain: 'peptivalabs.uk',
+    tagline: 'Engineered for research precision', currency: '$',
     bg: '#ffffff', surface: '#faf8f4', heading: '#14202a', body: '#14202a',
     muted: '#5f6c6c', accent: '#4e493e', accentText: '#ffffff', border: '#e1e9e8',
     fontHeading: "'Space Grotesk', Arial, sans-serif",
