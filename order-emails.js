@@ -75,7 +75,7 @@ const BRAND_THEMES = {
   'vorahealthcare.com': {
     key: 'vora', brand: 'Vora', domain: 'vorahealthcare.com',
     tagline: 'Premium research peptides for laboratory R&D', currency: '£',
-    bg: '#fffbf3', surface: '#f3f0eb', heading: '#043460', body: '#043460',
+    bg: '#fffbf3', surface: '#f3f0eb', heading: '#043460', body: '#02223f',
     muted: '#3d6081', accent: '#e1fcad', accentText: '#043460', border: '#e9e4db',
     fontHeading: "'Playfair Display', Georgia, 'Times New Roman', serif",
     fontBody: "'Inter Tight', system-ui, sans-serif",
@@ -83,8 +83,8 @@ const BRAND_THEMES = {
   'liorahealthcare.com': {
     key: 'liora', brand: 'Liora Healthcare', domain: 'liorahealthcare.com',
     tagline: 'Research-grade peptide supply', currency: 'AED ',
-    bg: '#f3f3f3', surface: '#141414', heading: '#ffffff', body: '#ffffff',
-    muted: '#949490', accent: '#ffeec8', accentText: '#080808', border: '#4b4b49',
+    bg: '#fffefd', surface: '#fbf8f5', heading: '#1a1a1a', body: '#1a1a1a',
+    muted: '#6d6d6d', accent: '#536052', accentText: '#f8f4ef', border: '#e6ddd3',
     fontHeading: "'Anton', 'Bebas Neue', Impact, sans-serif",
     fontBody: "'IBM Plex Sans', system-ui, 'Segoe UI', Roboto, sans-serif",
   },
