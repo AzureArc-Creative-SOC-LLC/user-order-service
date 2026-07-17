@@ -83,7 +83,7 @@ const BRAND_THEMES = {
   'liorahealthcare.com': {
     key: 'liora', brand: 'Liora Healthcare', domain: 'liorahealthcare.com',
     tagline: 'Research-grade peptide supply', currency: 'AED ',
-    bg: '#080808', surface: '#141414', heading: '#ffffff', body: '#ffffff',
+    bg: '#f3f3f3', surface: '#141414', heading: '#ffffff', body: '#ffffff',
     muted: '#949490', accent: '#ffeec8', accentText: '#080808', border: '#4b4b49',
     fontHeading: "'Anton', 'Bebas Neue', Impact, sans-serif",
     fontBody: "'IBM Plex Sans', system-ui, 'Segoe UI', Roboto, sans-serif",
