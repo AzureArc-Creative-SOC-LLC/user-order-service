@@ -36,7 +36,7 @@ const BRAND_THEMES = {
     key: 'zyra', brand: 'Zyra Labs', domain: 'zyrahealthcare.com',
     tagline: 'Research-grade peptides, held to a higher standard.', currency: '$',
     bg: '#faf8f4', surface: '#ffffff', heading: '#0e0e0e', body: '#1a1a1a',
-    muted: '#6c6c6c', accent: '#e5462b', accentText: '#f4f2ec', border: '#e6e1d8',
+    muted: '#6c6c6c', accent: '#851400', accentText: '#f4f2ec', border: '#e6e1d8',
     fontHeading: "Georgia, 'Times New Roman', Times, serif",
     fontBody: "'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
   },
