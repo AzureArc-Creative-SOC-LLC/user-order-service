@@ -3167,146 +3167,80 @@ async function persistOrderFromCheckout(connection, payload, opts) {
 
     `INSERT INTO orders (
 
-       order_number, customer_email, customer_name, customer_phone,
-
+       order_number, user_id, customer_email, customer_name, customer_phone,
        shipping_address, shipping_city, shipping_state, shipping_zip, shipping_country,
-
        currency, subtotal, shipping, total,
-
        credits_applied, total_before_credits,
-
        total_before_discount, total_after_discount, discount_amount,
-
        promo_code, promo_discount_percent, promo_valid,
-
        status, payment_status, payment_method,
-
        items_text, payment_screenshot_filename, payment_screenshot_url,
-
        bank_account_used, reserved_at, submitted_at, created_at, domain_id
-
      ) VALUES (
-
-       ?, ?, ?, ?,
-
+       ?, ?, ?, ?, ?,
        ?, ?, NULL, ?, ?,
-
        'GBP', ?, 0.00, ?,
-
        ?, ?,
-
        ?, ?, ?,
-
        ?, ?, ?,
-
        'pending', 'pending', ?,
-
        ?, ?, ?,
-
        ?, NULL, ?, ?, ?
-
      )
 
      ON DUPLICATE KEY UPDATE
-
+       user_id=COALESCE(VALUES(user_id), user_id),
        customer_email=VALUES(customer_email),
-
        customer_name=VALUES(customer_name),
-
        customer_phone=VALUES(customer_phone),
-
        shipping_address=VALUES(shipping_address),
-
        shipping_city=VALUES(shipping_city),
-
        shipping_zip=VALUES(shipping_zip),
-
        shipping_country=VALUES(shipping_country),
-
        subtotal=VALUES(subtotal),
-
        total=VALUES(total),
-
        total_before_discount=VALUES(total_before_discount),
-
        total_after_discount=VALUES(total_after_discount),
-
        discount_amount=VALUES(discount_amount),
-
        promo_code=VALUES(promo_code),
-
        promo_discount_percent=VALUES(promo_discount_percent),
-
        promo_valid=VALUES(promo_valid),
-
        credits_applied=VALUES(credits_applied),
-
        total_before_credits=VALUES(total_before_credits),
-
        items_text=VALUES(items_text),
-
        payment_screenshot_filename=VALUES(payment_screenshot_filename),
-
        payment_screenshot_url=VALUES(payment_screenshot_url),
-
        submitted_at=COALESCE(VALUES(submitted_at), submitted_at),
-
        updated_at=CURRENT_TIMESTAMP`,
-
     [
 
       orderNumber,
-
+      userId,
       email,
-
       customerName,
-
       phone,
-
       address,
-
       city,
-
       postcode,
-
       country,
-
       subtotal,
-
       finalTotal,
-
       finalCreditsApplied,
-
       totalBeforeCredits,
-
       subtotal,
-
       finalTotal,
-
       discountAmount,
-
       promoCode,
-
       promoDiscountPercent,
-
       promoCode ? 1 : 0,
-
       itemsText,
-
       screenshotFilename,
-
       screenshotUrl,
-
       paymentMethodLabel,
-
       bankAccountUsed,
-
       createdAt,
-
       createdAt,
-
       domainId,
-
     ]
 
   )
@@ -3330,15 +3264,10 @@ async function persistOrderFromCheckout(connection, payload, opts) {
      VALUES (?, 'Manual', ?, ?, 'GBP', 'pending', NULL, ?, ?)
 
      ON DUPLICATE KEY UPDATE
-
        order_id=VALUES(order_id),
-
        amount=VALUES(amount),
-
        currency=VALUES(currency),
-
        status=VALUES(status),
-
        updated_at=CURRENT_TIMESTAMP`,
 
     [orderId, providerId, total, createdAt, domainId]
