@@ -1,5 +1,5 @@
 // order-emails.js
-// Per-brand, theme-matched order-confirmation emails sent via Resend.
+// Per-brand, theme-matched order-confirmation emails sent via TurboSMTP.
 //
 // The user-order-service is shared by several white-label storefronts. When a
 // browser on one of those storefronts places an order, its cross-origin request
@@ -7,20 +7,19 @@
 // the matching brand theme and render a confirmation email that looks like that
 // specific site — instead of the generic Alluvi template.
 //
-// Transport: each white-label storefront domain is housed in one of up to three
-// TurboSMTP accounts (TURBOSMTP_{n}_USER/PASS/DOMAINS in .env). A branded email
-// is sent through the account whose *_DOMAINS lists theme.domain, as
+// Transport: TurboSMTP only (Resend, Mailjet and shared Gmail are no longer
+// used). Each storefront domain is housed in one of up to three TurboSMTP
+// accounts (TURBOSMTP_{n}_USER/PASS/DOMAINS in .env). A branded email is sent
+// through the account whose *_DOMAINS lists theme.domain, as
 // "<Brand> <orders@<domain>>" — that domain must be verified (SPF + DKIM) under
 // Sender Domain Verification in that account or TurboSMTP rejects the send.
-// A domain listed in no account uses TURBOSMTP_FALLBACK_ACCOUNT if set,
-// otherwise Resend (RESEND_API_KEY) as before. Main Alluvi keeps its own
-// separate TurboSMTP account and is intentionally not configured here.
+// A domain listed in no account uses TURBOSMTP_FALLBACK_ACCOUNT if set;
+// otherwise the send is skipped ({ skipped: 'no-transport' }) — it never falls
+// back to another provider or to an Alluvi sender.
 //
 // Security: all credentials come from process.env (never hard-coded).
 
 import nodemailer from 'nodemailer'
-
-const RESEND_ENDPOINT = 'https://api.resend.com/emails'
 
 // ── TurboSMTP account resolution ─────────────────────────────────────────────
 const TURBOSMTP_MAX_ACCOUNTS = 3
@@ -37,7 +36,7 @@ function turboSmtpAccount(n) {
 }
 
 // Returns the TurboSMTP account that houses `domain`, the fallback account if
-// configured, or null (→ caller uses Resend).
+// configured, or null (→ the send is skipped).
 function resolveTurboSmtpAccount(domain) {
   const d = String(domain || '').trim().toLowerCase().replace(/^www\./, '')
   const accounts = []
@@ -67,12 +66,13 @@ function turboSmtpTransport(account) {
   return t
 }
 
-async function sendViaTurboSmtp({ account, from, to, replyTo, subject, html, text, headers }) {
+async function sendViaTurboSmtp({ account, from, to, replyTo, subject, html, text, headers, attachments }) {
   try {
     const info = await turboSmtpTransport(account).sendMail({
       from, to, subject, html, text,
       ...(replyTo ? { replyTo } : {}),
       ...(headers && typeof headers === 'object' ? { headers } : {}),
+      ...(Array.isArray(attachments) && attachments.length ? { attachments } : {}),
     })
     return { success: true, messageId: info?.messageId || null, transport: `turbosmtp:${account.n}` }
   } catch (e) {
@@ -80,26 +80,24 @@ async function sendViaTurboSmtp({ account, from, to, replyTo, subject, html, tex
   }
 }
 
-// Picks the transport for a brand and sends. Returns { skipped } when nothing
-// is configured for it, else { success, messageId, transport }.
-async function sendBrandedEmail({ theme, to, replyTo, subject, html, text, headers, resendFrom }) {
-  const account = resolveTurboSmtpAccount(theme.domain)
-  if (account) {
-    const fromEmail = `orders@${theme.domain}`
-    return sendViaTurboSmtp({ account, from: `${theme.brand} <${fromEmail}>`, to, replyTo: replyTo || fromEmail, subject, html, text, headers })
-  }
-  const apiKey = process.env.RESEND_API_KEY
-  if (!apiKey) return { skipped: 'no-transport' }
-  const fromEmail = resendFrom || `orders@${theme.domain}`
-  const r = await sendViaResend({ apiKey, from: `${theme.brand} <${fromEmail}>`, to, replyTo: replyTo || fromEmail, subject, html, text, headers })
-  return { ...r, transport: 'resend' }
+// Sends through the TurboSMTP account housing the sender's domain. Returns
+// { skipped: 'no-transport' } when no account is configured for it, else
+// { success, messageId, transport }. `from` ({ email, name }) overrides the
+// default "<Brand> <orders@<theme.domain>>" sender (used by the main site).
+export async function sendBrandedEmail({ theme, to, replyTo, subject, html, text, headers, attachments, from }) {
+  const fromEmail = from?.email || `orders@${theme.domain}`
+  const fromName = from?.name || theme.brand
+  const senderDomain = String(fromEmail).split('@')[1] || theme.domain
+  const account = resolveTurboSmtpAccount(senderDomain)
+  if (!account) return { skipped: 'no-transport' }
+  return sendViaTurboSmtp({ account, from: `${fromName} <${fromEmail}>`, to, replyTo: replyTo || fromEmail, subject, html, text, headers, attachments })
 }
 
 // Non-secret summary for startup logs / debugging.
 function describeEmailTransports() {
   const accounts = []
   for (let n = 1; n <= TURBOSMTP_MAX_ACCOUNTS; n++) { const a = turboSmtpAccount(n); if (a) accounts.push({ account: n, domains: a.domains }) }
-  return { turbosmtp: accounts, fallbackAccount: process.env.TURBOSMTP_FALLBACK_ACCOUNT || null, resend: !!process.env.RESEND_API_KEY }
+  return { turbosmtp: accounts, fallbackAccount: process.env.TURBOSMTP_FALLBACK_ACCOUNT || null }
 }
 
 // ── Per-brand themes (extracted from each site's design tokens) ──────────────
@@ -406,33 +404,9 @@ function renderOrderEmailText(theme, order) {
   return lines.join('\n')
 }
 
-async function sendViaResend({ apiKey, from, to, replyTo, subject, html, text, headers }) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 10000)
-  try {
-    const res = await fetch(RESEND_ENDPOINT, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        from, to: [to], subject, html, text,
-        ...(replyTo ? { reply_to: replyTo } : {}),
-        ...(headers && typeof headers === 'object' ? { headers } : {}),
-      }),
-      signal: controller.signal,
-    })
-    const data = await res.json().catch(() => ({}))
-    if (!res.ok) return { success: false, error: data?.message || data?.error || `Resend ${res.status}` }
-    return { success: true, messageId: data?.id || null }
-  } catch (e) {
-    return { success: false, error: e?.name === 'AbortError' ? 'Resend timeout' : (e?.message || String(e)) }
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
 // Main entry: send a brand-themed order confirmation.
 // Returns { skipped } when no storefront matches (caller should fall back to the
-// generic email) or when no transport is configured. Returns { success } on send.
+// generic email) or when no TurboSMTP account is configured for the storefront. Returns { success } on send.
 export async function sendBrandedOrderConfirmation({ req, to, payload, orderNumber, customerName }) {
   const theme = resolveBrandTheme(req, payload || {})
   if (!theme) return { skipped: 'no-brand-match' }
@@ -448,8 +422,6 @@ export async function sendBrandedOrderConfirmation({ req, to, payload, orderNumb
     subject,
     html: renderOrderEmailHtml(theme, order),
     text: renderOrderEmailText(theme, order),
-    // Resend path only: TurboSMTP always sends as orders@<theme.domain>.
-    resendFrom: process.env.ORDER_EMAIL_FROM || process.env.EMAIL_FROM_EMAIL || 'orders@alluvi.org',
   })
   return { ...result, brand: theme.key }
 }
@@ -530,8 +502,8 @@ function renderPasswordResetEmailText(theme, { userName, resetLink }) {
 // theme so nothing ever falls back to a bespoke, unbranded design) — and sends
 // from that storefront's own domain (orders@<domain>) so the "From" address
 // matches the site the user actually signed up on.
-// Returns { skipped } when no transport is configured (caller should fall back
-// to a direct-SMTP send). Returns { success } on send.
+// Returns { skipped } when no TurboSMTP account is configured for the storefront.
+// Returns { success } on send.
 export async function sendBrandedPasswordResetEmail({ req, to, resetLink, userName, payload }) {
   const theme = resolveBrandTheme(req, payload || {}) || DEFAULT_THEME
 
@@ -662,8 +634,8 @@ function renderUnsubscribePageHtml(theme, { status, email } = {}) {
 // Main entry: send the brand-themed Bench Programme waitlist email. Resolves the
 // storefront the same way password resets do (explicit payload brand/store/
 // domain, then Origin/Referer, then the generic theme) and sends as that brand
-// from orders@<domain>. Returns { skipped } when Resend isn't configured so the
-// caller can fall back to SMTP with the same themed HTML.
+// from orders@<domain>. Returns { skipped } when no TurboSMTP account is
+// configured for the storefront.
 // RFC 8058 one-click headers: Gmail/Apple Mail show a native "Unsubscribe"
 // button and POST to the URL without the user opening the page.
 function benchUnsubscribeHeaders(theme, unsubscribeUrl) {

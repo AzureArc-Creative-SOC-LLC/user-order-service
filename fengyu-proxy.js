@@ -109,7 +109,7 @@ export async function fengyuProxy(req, res) {
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'User-Agent': 'Alluvi-Server/1.0'
+        'User-Agent': 'order-service/1.0'
       },
       timeout: 16000
     });

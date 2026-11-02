@@ -8,12 +8,11 @@ import multer from 'multer';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import nodemailer from 'nodemailer';
 import { fengyuProxy } from './fengyu-proxy.js';
 
 import { fileURLToPath } from 'url'
 
-import { buildHasInvoiceMaskedItems, sendAffiliateRewardNotificationEmail, sendAffiliateWelcomeEmail, sendDeliveryInformationEmail, sendEmail, sendHasInvoiceEmail, sendKlymePaymentRejectedEmail, sendKlymePaymentSuccessfulEmail, sendNewsletterEntryEmail, sendOrderConfirmationEmail, sendPaymentDeclinedEmail, sendPaymentReminderEmail, sendPaymentScreenshotReceivedEmail, sendPaymentSuccessfulEmail, sendStatusUpdateEmail } from './emailService.js'
+import { buildHasInvoiceMaskedItems, sendAffiliateRewardNotificationEmail, sendAffiliateWelcomeEmail, sendDeliveryInformationEmail, sendEmail, sendHasInvoiceEmail, sendKlymePaymentRejectedEmail, sendKlymePaymentSuccessfulEmail, sendNewsletterEntryEmail, sendOrderConfirmationEmail, sendPaymentDeclinedEmail, sendPaymentReminderEmail, sendPaymentScreenshotReceivedEmail, sendPaymentSuccessfulEmail, sendStatusUpdateEmail, rebrand } from './emailService.js'
 import { sendBrandedOrderConfirmation, sendBrandedPasswordResetEmail, sendBrandedBenchWaitlistEmail, sendBrandedGiveawayEntryEmail, describeEmailTransports, resolveBrandTheme, renderPasswordResetEmailHtml, renderBenchWaitlistEmailHtml, renderBenchWaitlistEmailText, renderUnsubscribePageHtml, benchUnsubscribeHeaders, BRAND_THEMES, DEFAULT_THEME } from './order-emails.js'
 import { createDomainMiddleware } from './domainMiddleware.js'
 
@@ -496,7 +495,7 @@ async function grantAffiliateRewardForOrder(connection, orderNumber, opts) {
   // Email failures must never roll back the credit grant or block the caller.
   try {
     const [notifyRows] = await connection.execute(
-      `SELECT u.email AS email, a.first_name AS first_name, c.balance AS balance
+      `SELECT u.email AS email, a.first_name AS first_name, c.balance AS balance, a.domain_id AS domain_id
        FROM affiliates a
        JOIN users u ON u.id = a.user_id
        LEFT JOIN user_credits c ON c.user_id = a.user_id
@@ -513,6 +512,8 @@ async function grantAffiliateRewardForOrder(connection, orderNumber, opts) {
         promoCode,
         rewardAmount: safeReward,
         newBalance: Number.isFinite(newBalanceNum) ? newBalanceNum : null,
+        // The affiliate's own storefront, else the redeemed order's.
+        brandTheme: await brandThemeForDomainId(notify?.domain_id ?? order.domain_id),
       }
       void sendAffiliateRewardNotificationEmail(notifyEmail, payload).catch((err) => {
         console.error('Failed to send affiliate redemption email:', err?.message || String(err))
@@ -1026,9 +1027,46 @@ const DB_NAME = env('DB_NAME', '')
 
 
 
-const JWT_SECRET = env('JWT_SECRET', 'alluvi_super_secret_key_2024_production_secure_token_12345')
+// No committed fallback: a known default would let anyone forge login tokens.
+// Production must set JWT_SECRET; elsewhere a random per-process secret is used
+// (sessions and signed links then reset on restart).
+let JWT_SECRET = env('JWT_SECRET', '')
+if (!JWT_SECRET) {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('JWT_SECRET must be set in production')
+  }
+  JWT_SECRET = crypto.randomBytes(48).toString('hex')
+  console.warn('[security] JWT_SECRET not set - using a random per-process secret (tokens reset on restart)')
+}
 
-const corsOrigin = env('CORS_ORIGIN', '*')
+// Allowed browser origins: active storefront domains from the `domains` table,
+// the Alluvi main site, any host listed in CORS_ORIGIN (comma separated), and
+// localhost outside production. Requests with no Origin (server-to-server,
+// webhooks) are unaffected.
+const corsExtraHosts = env('CORS_ORIGIN', '')
+  .split(',')
+  .map((h) => h.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, ''))
+  .filter((h) => h && h !== '*')
+const corsAllowCache = new Map() // host -> { ok, at }
+async function corsOriginCheck(origin, cb) {
+  try {
+    if (!origin) return cb(null, true)
+    let host = ''
+    try { host = new URL(origin).hostname.toLowerCase().replace(/^www\./, '') } catch { return cb(null, false) }
+    if (corsExtraHosts.includes(host)) return cb(null, true)
+    if (/(^|\.)alluvi\.(org|store|com)$/.test(host)) return cb(null, true)
+    if (process.env.NODE_ENV !== 'production' && (host === 'localhost' || host === '127.0.0.1')) return cb(null, true)
+    const hit = corsAllowCache.get(host)
+    if (hit && Date.now() - hit.at < 60000) return cb(null, hit.ok)
+    const [rows] = await pool.execute("SELECT 1 FROM domains WHERE domain_name = ? AND status = 'active' LIMIT 1", [host])
+    const ok = Array.isArray(rows) && rows.length > 0
+    corsAllowCache.set(host, { ok, at: Date.now() })
+    return cb(null, ok)
+  } catch (e) {
+    console.error('[cors] origin check failed:', e?.message || e)
+    return cb(null, false)
+  }
+}
 
 
 
@@ -1086,16 +1124,12 @@ app.use(express.json({ limit: '5mb' }))
 
 app.use(
 
-  cors({
-    // Global CORS: reflect any origin so this API is callable from anywhere in the world.
-    origin: true,
-    credentials: true,
-  })
+  cors({ origin: corsOriginCheck, credentials: true })
 
 )
 
 // Handle preflight requests for all routes
-app.options('*', cors({ origin: true, credentials: true }))
+app.options('*', cors({ origin: corsOriginCheck, credentials: true }))
 
 
 
@@ -1107,7 +1141,7 @@ const pool = mysql.createPool(
       waitForConnections: true,
       connectionLimit: 20,
       queueLimit: 100,
-      ssl: { rejectUnauthorized: false },
+      ssl: { rejectUnauthorized: env('DB_SSL_REJECT_UNAUTHORIZED', 'false') === 'true' },
     }
     : {
       host: DB_HOST,
@@ -1121,7 +1155,7 @@ const pool = mysql.createPool(
       waitForConnections: true,
       connectionLimit: 20,
       queueLimit: 100,
-      ssl: { rejectUnauthorized: false },
+      ssl: { rejectUnauthorized: env('DB_SSL_REJECT_UNAUTHORIZED', 'false') === 'true' },
     }
 )
 
@@ -1164,6 +1198,36 @@ async function resolveDomainName(domainId) {
 function buildStorefrontUrl(domainName, path) {
   const cleanPath = String(path || '').replace(/^\/+/, '')
   return `https://${domainName}/${cleanPath}`
+}
+
+// Email senders resolve { success:false } instead of throwing. Callers that mark an
+// email as sent in the DB use this so a failed/skipped send is not recorded as sent
+// (the caller's catch logs it and the send is retried on the next trigger).
+async function sendOrThrow(sendFn, ...args) {
+  const r = await sendFn(...args)
+  if (!r?.success) throw new Error(r?.error || 'email send failed')
+  return r
+}
+
+// Brand theme for a storefront domain name, or null for the main Alluvi site /
+// unknown domains (those keep the Alluvi templates). Passed to emailService as
+// `brandTheme` so the email is branded, linked and sent as that storefront.
+function brandThemeForDomainName(domainName) {
+  return BRAND_THEMES[String(domainName || '').trim().toLowerCase().replace(/^www\./, '')] || null
+}
+// For code with a live request (Origin/Referer-based, same as order confirmations).
+function brandThemeForReq(req, payload = {}) {
+  return resolveBrandTheme(req, payload) || brandThemeForDomainName(req?.domain)
+}
+// For webhooks/jobs with no request: look the theme up from an order's domain_id.
+async function brandThemeForDomainId(domainId) {
+  return brandThemeForDomainName(await resolveDomainName(domainId))
+}
+// Preferred for anything tied to an order row: the order's own domain_id wins,
+// falling back to the request's storefront only if the row has none.
+async function brandThemeForOrder(order, req) {
+  if (order?.domain_id != null) return brandThemeForDomainId(order.domain_id)
+  return req ? brandThemeForReq(req) : null
 }
 
 
@@ -1476,6 +1540,7 @@ app.post(['/api/affiliate/request', '/api/auth/affiliate/request'], requireUserA
         promoCode,
         percent,
         rewardAmount: AFFILIATE_DEFAULT_REWARD,
+        brandTheme: brandThemeForReq(req),
       }).catch((err) => {
         console.error('Failed to send affiliate welcome email:', err?.message || String(err))
       })
@@ -3829,6 +3894,7 @@ app.post('/api/payment-capture/upload', captureUpload.single('paymentScreenshot'
           customerName,
           orderNumber,
           amountText,
+          brandTheme: await brandThemeForOrder(order, req),
         })
 
         console.log('[payment-capture/upload] screenshot received email result', {
@@ -4101,6 +4167,8 @@ app.post('/api/payment-capture/upload', captureUpload.single('paymentScreenshot'
 
             currency,
 
+            brandTheme: await brandThemeForOrder(order, req),
+
           })
 
           console.log('[payment-capture/upload] payment status email: success template result', {
@@ -4332,7 +4400,10 @@ app.post('/api/payment-capture/upload', captureUpload.single('paymentScreenshot'
             const publicProto = req.headers['x-forwarded-proto'] || req.protocol
             const publicHost = req.get('host')
             const publicOrigin = `${publicProto}://${publicHost}`
-            const publicBase = String(PUBLIC_API_BASE_URL || env('PUBLIC_API_BASE_URL', env('FRONTEND_URL', publicOrigin)) || publicOrigin).replace(/\/$/, '')
+            const declinedTheme = await brandThemeForOrder(order, req)
+            const publicBase = declinedTheme
+              ? `https://${declinedTheme.domain}`
+              : String(PUBLIC_API_BASE_URL || env('PUBLIC_API_BASE_URL', env('FRONTEND_URL', publicOrigin)) || publicOrigin).replace(/\/$/, '')
 
             retryLink = `${publicBase}/checkout/payment?token=${encodeURIComponent(rawToken)}`
 
@@ -4355,6 +4426,8 @@ app.post('/api/payment-capture/upload', captureUpload.single('paymentScreenshot'
             reason: rejectionReason || 'Payment verification failed.',
 
             retryLink,
+
+            brandTheme: await brandThemeForOrder(order, req),
 
           })
 
@@ -4747,7 +4820,11 @@ app.post(['/api/user-orders', '/api/user-orders/'], upload.single('paymentScreen
 
             paymentCaptureRequestId = Number(ins?.insertId)
 
-            const publicBase = (PUBLIC_API_BASE_URL || 'https://alluvi.org').replace(/\/$/, '')
+            // Storefront orders get a payment link on the storefront's own domain.
+            const linkTheme = brandThemeForReq(req, payload)
+            const publicBase = linkTheme
+              ? `https://${linkTheme.domain}`
+              : (PUBLIC_API_BASE_URL || 'https://alluvi.org').replace(/\/$/, '')
 
             paymentLink = `${publicBase}/checkout/payment?token=${encodeURIComponent(rawToken)}`
 
@@ -4862,7 +4939,7 @@ app.post(['/api/user-orders', '/api/user-orders/'], upload.single('paymentScreen
 
 
         // Brand-themed confirmation: if the order came from one of the white-label
-        // storefronts (matched by request Origin), send its themed email via Resend.
+        // storefronts (matched by request Origin), send its themed email via TurboSMTP.
         // Falls back to the generic Alluvi confirmation when no storefront matches.
         // The generic Alluvi email is only for orders that match no storefront. If a
         // storefront matched but its branded send failed, don't send an Alluvi-branded
@@ -4899,12 +4976,16 @@ app.post(['/api/user-orders', '/api/user-orders/'], upload.single('paymentScreen
 
         if (paymentLink) {
           try {
-            const trackUrl = `${(PUBLIC_API_BASE_URL || 'https://alluvi.org').replace(/\/$/, '')}/track-order`
+            const reminderTheme = brandThemeForReq(req, payload)
+            const trackUrl = reminderTheme
+              ? buildStorefrontUrl(reminderTheme.domain, 'track-order')
+              : `${(PUBLIC_API_BASE_URL || 'https://alluvi.org').replace(/\/$/, '')}/track-order`
             const r = await sendPaymentReminderEmail(customerEmail, {
               customerName,
               orderNumber,
               paymentLink,
               trackUrl,
+              brandTheme: reminderTheme,
             })
             console.log('[user-orders] payment link email result', {
               orderNumber,
@@ -5792,9 +5873,8 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
 
 
-    // Send through that storefront's TurboSMTP account (or Resend if the
-    // domain isn't housed in one) so the email comes from orders@<domain>
-    // instead of the shared Gmail inbox.
+    // Send through that storefront's TurboSMTP account so the email comes from
+    // orders@<domain> instead of a shared inbox.
 
     const branded = await sendBrandedPasswordResetEmail({ req, to: user.email, resetLink, userName: user.name, payload: brandPayload })
 
@@ -7096,7 +7176,7 @@ app.post('/api/klyme/webhook', async (req, res) => {
 
               try {
 
-                await sendKlymePaymentSuccessfulEmail(customerEmail, {
+                await sendOrThrow(sendKlymePaymentSuccessfulEmail, customerEmail, {
 
                   customerName,
 
@@ -7107,6 +7187,7 @@ app.post('/api/klyme/webhook', async (req, res) => {
                   currency: String(order?.currency || 'GBP'),
 
                   trackUrl,
+                  brandTheme: await brandThemeForOrder(order, req),
 
                 })
 
@@ -7144,7 +7225,7 @@ app.post('/api/klyme/webhook', async (req, res) => {
 
                 const estimate = computeUkDeliveryEstimate(paidAt)
 
-                await sendDeliveryInformationEmail(customerEmail, {
+                await sendOrThrow(sendDeliveryInformationEmail, customerEmail, {
 
                   customerName,
 
@@ -7155,6 +7236,7 @@ app.post('/api/klyme/webhook', async (req, res) => {
                   deliveryDateLabel: estimate.deliveryDateLabel,
 
                   trackUrl,
+                  brandTheme: await brandThemeForOrder(order, req),
 
                 })
 
@@ -7196,7 +7278,7 @@ app.post('/api/klyme/webhook', async (req, res) => {
 
               try {
 
-                await sendKlymePaymentRejectedEmail(customerEmail, {
+                await sendOrThrow(sendKlymePaymentRejectedEmail, customerEmail, {
 
                   customerName,
 
@@ -7205,6 +7287,7 @@ app.post('/api/klyme/webhook', async (req, res) => {
                   reason: String(derived?.description || derived?.statusCode || 'Payment rejected').trim(),
 
                   trackUrl,
+                  brandTheme: await brandThemeForOrder(order, req),
 
                 })
 
@@ -7547,12 +7630,13 @@ app.get('/api/klyme/verify-payment/:uuid', async (req, res) => {
 
               if (shouldSendSuccess) {
                 try {
-                  await sendKlymePaymentSuccessfulEmail(customerEmail, {
+                  await sendOrThrow(sendKlymePaymentSuccessfulEmail, customerEmail, {
                     customerName,
                     orderNumber,
                     amount: Number(order?.total || 0),
                     currency: String(order?.currency || 'GBP'),
                     trackUrl,
+                    brandTheme: await brandThemeForOrder(order, req),
                   })
                   await connection.execute('UPDATE payment_sessions SET success_email_sent_at = NOW() WHERE session_id = ? LIMIT 1', [uuid])
                 } catch (e) {
@@ -7570,12 +7654,13 @@ app.get('/api/klyme/verify-payment/:uuid', async (req, res) => {
                 try {
                   const paidAt = new Date()
                   const estimate = computeUkDeliveryEstimate(paidAt)
-                  await sendDeliveryInformationEmail(customerEmail, {
+                  await sendOrThrow(sendDeliveryInformationEmail, customerEmail, {
                     customerName,
                     orderNumber,
                     deliveryText: estimate.deliveryText,
                     deliveryDateLabel: estimate.deliveryDateLabel,
                     trackUrl,
+                    brandTheme: await brandThemeForOrder(order, req),
                   })
                   await connection.execute('UPDATE payment_sessions SET delivery_email_sent_at = NOW() WHERE session_id = ? LIMIT 1', [uuid])
                 } catch (e) {
@@ -7591,11 +7676,12 @@ app.get('/api/klyme/verify-payment/:uuid', async (req, res) => {
 
               if (shouldSendRejected) {
                 try {
-                  await sendKlymePaymentRejectedEmail(customerEmail, {
+                  await sendOrThrow(sendKlymePaymentRejectedEmail, customerEmail, {
                     customerName,
                     orderNumber,
                     reason: String(derived?.description || derived?.statusCode || 'Payment rejected').trim(),
                     trackUrl,
+                    brandTheme: await brandThemeForOrder(order, req),
                   })
                   await connection.execute('UPDATE payment_sessions SET rejected_email_sent_at = NOW() WHERE session_id = ? LIMIT 1', [uuid])
                 } catch (e) {
@@ -7822,7 +7908,7 @@ const aabanpayCreatePaymentHandler = async (req, res) => {
       webhook_url: webhookUrl,
       metadata: {
         internal_order_id: order.id,
-        source: 'alluvi_store',
+        source: String(req.domain || 'store'),
       },
     };
 
@@ -8164,7 +8250,7 @@ app.post('/api/user-orders/aabanpay/charge', async (req, res) => {
     const shippingStateRaw = String(order.shipping_state || '').trim()
     const shippingState = shippingStateRaw || shippingCity || (shippingCountry ? shippingCountry : 'UK')
 
-    const callbackBase = String(env('PUBLIC_API_BASE_URL', env('FRONTEND_URL', 'https://alluvi.store')) || '').replace(/\/$/, '')
+    const callbackBase = String(env('PUBLIC_API_BASE_URL', env('FRONTEND_URL', `${req.headers['x-forwarded-proto'] || req.protocol}://${req.get('host')}`)) || '').replace(/\/$/, '')
     const callbackurl = `${callbackBase}/api/user-orders/aabanpay/callback?order_id=${encodeURIComponent(String(order.order_number))}`
 
     // Use callback as returnurl so it processes payment status and redirects to correct page
@@ -8318,12 +8404,13 @@ app.post('/api/user-orders/aabanpay/charge', async (req, res) => {
 
           if (!sRow?.success_email_sent_at) {
             try {
-              await sendKlymePaymentSuccessfulEmail(customerEmail, {
+              await sendOrThrow(sendKlymePaymentSuccessfulEmail, customerEmail, {
                 customerName,
                 orderNumber,
                 amount: Number(order.total || 0),
                 currency: String(order.currency || 'GBP'),
                 trackUrl,
+                brandTheme: await brandThemeForOrder(order, req),
               })
               try {
                 await connection.execute('UPDATE payment_sessions SET success_email_sent_at = NOW() WHERE session_id = ? LIMIT 1', [sessionKey])
@@ -8339,12 +8426,13 @@ app.post('/api/user-orders/aabanpay/charge', async (req, res) => {
             try {
               const paidAt = new Date()
               const estimate = computeUkDeliveryEstimate(paidAt)
-              await sendDeliveryInformationEmail(customerEmail, {
+              await sendOrThrow(sendDeliveryInformationEmail, customerEmail, {
                 customerName,
                 orderNumber,
                 deliveryText: estimate.deliveryText,
                 deliveryDateLabel: estimate.deliveryDateLabel,
                 trackUrl,
+                brandTheme: await brandThemeForOrder(order, req),
               })
               try {
                 await connection.execute('UPDATE payment_sessions SET delivery_email_sent_at = NOW() WHERE session_id = ? LIMIT 1', [sessionKey])
@@ -8396,11 +8484,12 @@ app.post('/api/user-orders/aabanpay/charge', async (req, res) => {
 
         if (!rRow?.rejected_email_sent_at) {
           try {
-            await sendKlymePaymentRejectedEmail(customerEmail, {
+            await sendOrThrow(sendKlymePaymentRejectedEmail, customerEmail, {
               customerName,
               orderNumber,
               reason,
               trackUrl,
+              brandTheme: await brandThemeForOrder(order, req),
             })
             try {
               await connection.execute('UPDATE payment_sessions SET rejected_email_sent_at = NOW() WHERE session_id = ? LIMIT 1', [sessionKey])
@@ -8512,12 +8601,13 @@ app.get('/api/user-orders/aabanpay/callback', async (req, res) => {
 
           if (!sRow?.success_email_sent_at) {
             try {
-              await sendKlymePaymentSuccessfulEmail(customerEmail, {
+              await sendOrThrow(sendKlymePaymentSuccessfulEmail, customerEmail, {
                 customerName,
                 orderNumber,
                 amount: Number(order.total || 0),
                 currency: String(order.currency || 'GBP'),
                 trackUrl,
+                brandTheme: await brandThemeForOrder(order, req),
               })
               try {
                 await connection.execute('UPDATE payment_sessions SET success_email_sent_at = NOW() WHERE session_id = ? LIMIT 1', [sessionKey])
@@ -8533,12 +8623,13 @@ app.get('/api/user-orders/aabanpay/callback', async (req, res) => {
             try {
               const paidAt = new Date()
               const estimate = computeUkDeliveryEstimate(paidAt)
-              await sendDeliveryInformationEmail(customerEmail, {
+              await sendOrThrow(sendDeliveryInformationEmail, customerEmail, {
                 customerName,
                 orderNumber,
                 deliveryText: estimate.deliveryText,
                 deliveryDateLabel: estimate.deliveryDateLabel,
                 trackUrl,
+                brandTheme: await brandThemeForOrder(order, req),
               })
               try {
                 await connection.execute('UPDATE payment_sessions SET delivery_email_sent_at = NOW() WHERE session_id = ? LIMIT 1', [sessionKey])
@@ -8584,11 +8675,12 @@ app.get('/api/user-orders/aabanpay/callback', async (req, res) => {
 
           if (!rRow?.rejected_email_sent_at) {
             try {
-              await sendKlymePaymentRejectedEmail(customerEmail, {
+              await sendOrThrow(sendKlymePaymentRejectedEmail, customerEmail, {
                 customerName,
                 orderNumber,
                 reason,
                 trackUrl,
+                brandTheme: await brandThemeForOrder(order, req),
               })
               try {
                 await connection.execute('UPDATE payment_sessions SET rejected_email_sent_at = NOW() WHERE session_id = ? LIMIT 1', [sessionKey])
@@ -8975,7 +9067,13 @@ app.post('/api/user-orders/verify-product/delete', async (req, res) => {
   try {
     const { id, password } = req.body || {}
 
-    if (password !== 'Alluvi@admin@1512') {
+    const adminPassword = env('VERIFY_PRODUCT_ADMIN_PASSWORD', '')
+    if (!adminPassword) {
+      return res.status(503).json({ message: 'Delete is not configured.' })
+    }
+    const givenBuf = Buffer.from(String(password || ''))
+    const wantBuf = Buffer.from(adminPassword)
+    if (givenBuf.length !== wantBuf.length || !crypto.timingSafeEqual(givenBuf, wantBuf)) {
       return res.status(403).json({ message: 'Incorrect password.' })
     }
 
@@ -9512,9 +9610,9 @@ SEAL NUMBER VERIFICATION (Anti-Counterfeit):
 
 // ── Gemini API call ─────────────────────────────────────────────────────
 
-async function callGemini(messages, contextDocs) {
+async function callGemini(messages, contextDocs, brandTheme = null) {
   const contextBlock = contextDocs.map(d => `--- ${d.title} ---\n${d.content}`).join('\n\n')
-  const systemWithContext = `${ALLUVI_SYSTEM_PROMPT}\n\n=== CONTEXT DOCUMENTS (RAG-retrieved — base your answer on these) ===\n\n${contextBlock}\n\n=== END CONTEXT ===`
+  const systemWithContext = rebrand(`${ALLUVI_SYSTEM_PROMPT}\n\n=== CONTEXT DOCUMENTS (RAG-retrieved — base your answer on these) ===\n\n${contextBlock}\n\n=== END CONTEXT ===`, brandTheme)
 
   // Gemini uses a different format: system instruction + contents array
   const geminiUrl = `https://generativelanguage.googleapis.com/${GEMINI_API_VER}/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`
@@ -9551,9 +9649,9 @@ async function callGemini(messages, contextDocs) {
 
 // ── HuggingFace API call (fallback) ─────────────────────────────────────
 
-async function callHuggingFace(messages, contextDocs) {
+async function callHuggingFace(messages, contextDocs, brandTheme = null) {
   const contextBlock = contextDocs.map(d => `--- ${d.title} ---\n${d.content}`).join('\n\n')
-  const systemWithContext = `${ALLUVI_SYSTEM_PROMPT}\n\n=== CONTEXT DOCUMENTS ===\n\n${contextBlock}\n\n=== END CONTEXT ===`
+  const systemWithContext = rebrand(`${ALLUVI_SYSTEM_PROMPT}\n\n=== CONTEXT DOCUMENTS ===\n\n${contextBlock}\n\n=== END CONTEXT ===`, brandTheme)
 
   const hfMessages = [
     { role: 'system', content: systemWithContext },
@@ -9599,6 +9697,7 @@ app.post('/api/ai-chat', async (req, res) => {
   }
 
   try {
+    const chatTheme = brandThemeForReq(req)
     const userMessage = String(req.body?.message || '').trim()
     if (!userMessage) return res.status(400).json({ error: 'Message is required' })
     if (userMessage.length > 1000) return res.status(400).json({ error: 'Message too long (max 1000 chars)' })
@@ -9644,7 +9743,7 @@ app.post('/api/ai-chat', async (req, res) => {
     // Try Gemini first, fall back to HuggingFace
     if (GEMINI_API_KEY) {
       try {
-        reply = await callGemini(messages, contextDocs)
+        reply = await callGemini(messages, contextDocs, chatTheme)
         provider = 'gemini'
       } catch (gemErr) {
         console.error('[ai-chat] Gemini failed, trying HuggingFace fallback:', gemErr?.message)
@@ -9653,7 +9752,7 @@ app.post('/api/ai-chat', async (req, res) => {
 
     if (!reply && HF_API_KEY) {
       try {
-        reply = await callHuggingFace(messages, contextDocs)
+        reply = await callHuggingFace(messages, contextDocs, chatTheme)
         provider = 'huggingface'
       } catch (hfErr) {
         console.error('[ai-chat] HuggingFace also failed:', hfErr?.message)
@@ -9667,8 +9766,8 @@ app.post('/api/ai-chat', async (req, res) => {
     console.log(`[ai-chat] Reply via ${provider}, length: ${reply.length}`)
 
     return res.json({
-      reply,
-      sources: contextDocs.map(d => ({ id: d.id, title: d.title })),
+      reply: rebrand(reply, chatTheme),
+      sources: contextDocs.map(d => ({ id: d.id, title: rebrand(d.title, chatTheme) })),
       provider,
     })
   } catch (e) {
@@ -9679,7 +9778,8 @@ app.post('/api/ai-chat', async (req, res) => {
 
 // ── Suggested questions ─────────────────────────────────────────────────
 
-app.get('/api/ai-chat/suggestions', (_req, res) => {
+app.get('/api/ai-chat/suggestions', (req, res) => {
+  const suggestionTheme = brandThemeForReq(req)
   res.json({
     suggestions: [
       'What is Retatrutide and how does it work?',
@@ -9688,7 +9788,7 @@ app.get('/api/ai-chat/suggestions', (_req, res) => {
       'Tell me about the Glow product',
       'How should peptides be stored for research?',
       'What products does Alluvi have in stock?',
-    ],
+    ].map((q) => rebrand(q, suggestionTheme)),
   })
 })
 
@@ -9713,25 +9813,6 @@ function newsletterRateLimit(ip) {
   arr.push(now)
   newsletterRateMap.set(ip, arr)
   return true
-}
-
-let newsletterAdminTransporter = null
-function getNewsletterAdminTransporter() {
-  if (newsletterAdminTransporter) return newsletterAdminTransporter
-  const user = env('EMAIL_USER')
-  const pass = env('EMAIL_PASS')
-  if (!user || !pass) return null
-  newsletterAdminTransporter = nodemailer.createTransport({
-    host: env('SMTP_HOST', 'smtp.gmail.com'),
-    port: Number(env('SMTP_PORT', '587')) || 587,
-    secure: false,
-    auth: { user, pass },
-    tls: { rejectUnauthorized: false },
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-    socketTimeout: 10000,
-  })
-  return newsletterAdminTransporter
 }
 
 async function ensureNewsletterTable() {
@@ -9894,7 +9975,7 @@ app.post('/api/newsletter/subscribe', async (req, res) => {
           if (isBenchProgramme) {
             const unsubscribeUrl = newsletterUnsubscribeUrl(subscriberId, email)
             // Branded per storefront (same resolution as forgot-password): the
-            // storefront's TurboSMTP account (or Resend) as "<Brand> <orders@<domain>>".
+            // storefront's TurboSMTP account as "<Brand> <orders@<domain>>".
             // No shared-Gmail fallback: it would expose the shared inbox as the sender.
             const branded = await sendBrandedBenchWaitlistEmail({ req, to: email, payload: body, unsubscribeUrl })
             if (!branded?.success) {
