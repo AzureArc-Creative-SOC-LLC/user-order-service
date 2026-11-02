@@ -1205,13 +1205,34 @@ actually subscribing anyone, so as not to tip off bots.
 ```
 `consent` must be truthy (`true`, `"true"`, `1`, or `"1"`). `source` optional, defaults to `"home_popup_reta"`, max 64 chars. `website` is the honeypot — always send it empty.
 
+**Bench Programme waitlist.** The "Join the programme" form on the Bench Programme section posts to this same endpoint with `"source": "bench_programme"`. This is email collection only — it does **not** create a subscription, take payment, apply any discount or schedule deliveries. The only differences from a giveaway signup:
+
+- the subscriber gets a **storefront-branded** launching-soon / early-access email (*"Welcome aboard — the `<Brand>` Bench Programme is coming soon"*) instead of the giveaway entry email. The brand is resolved exactly as for password resets: optional `brand` / `store` / `storeDomain` in the body, else the request `Origin`/`Referer` against `BRAND_THEMES` in `order-emails.js`, else the generic theme. Sent as `<Brand> <orders@<domain>>` through the TurboSMTP account whose `TURBOSMTP_{n}_DOMAINS` lists that domain (else `TURBOSMTP_FALLBACK_ACCOUNT`, else Resend), with a Gmail SMTP fallback using the same themed HTML;
+- the internal notification to `NEWSLETTER_NOTIFY_EMAIL` is titled "New Bench Programme registration";
+- the missing-consent error reads `"Consent is required to register your interest."`.
+
+Rows are distinguishable in the admin subscriber list / CSV export by the `source` column. The same email can be in both the giveaway and the waitlist (uniqueness is per `email`+`source`).
+
 **Response `200`:** `{ "ok": true, "id": 123 }`
+
+**Response `200`** (previously unsubscribed, now re-activated — confirmation email is re-sent): `{ "ok": true, "id": 123, "resubscribed": true }`
 
 **Response `200`** (already subscribed — same email+source pair): `{ "ok": true, "already_subscribed": true }`
 
 **Response `200`** (honeypot triggered): `{ "ok": true }`
 
 **Errors:** `400` `{ "error": "Please enter a valid email address." }` or `"Consent is required to enter the giveaway."` · `429` `{ "error": "Too many submissions. Please try again later." }` — rate-limited to 5/hour per IP · `500` `{ "error": "Failed to submit. Please try again." }`
+
+### GET | POST `/api/newsletter/unsubscribe?id=<id>&t=<token>`
+
+One-click unsubscribe. The Bench Programme email carries this link in its footer and in `List-Unsubscribe` / `List-Unsubscribe-Post` headers (RFC 8058), so mail clients also show a native unsubscribe button.
+
+`t` is `HMAC-SHA256(NEWSLETTER_UNSUBSCRIBE_SECRET, "<id>:<email>")` in hex — falls back to `JWT_SECRET` when the dedicated secret isn't set. It is verified against the stored row (constant-time), so a link can't be forged for another address or reused after the row is deleted. The base URL is `PUBLIC_API_BASE_URL`.
+
+- **GET** (browser click): sets `newsletter_subscribers.unsubscribed_at = NOW()` and renders a small storefront-branded HTML page — brand resolved from the row's `domain_id`. States: *unsubscribed* (`200`), *already unsubscribed* (`200`), *invalid link* (`400`).
+- **POST** (mail-client one-click, `application/x-www-form-urlencoded` body `List-Unsubscribe=One-Click`): same effect, responds `200 ok` / `400 invalid` as `text/plain`.
+
+Unsubscribed rows are kept (for audit) but hidden from the admin list and CSV export unless `?include_unsubscribed=1` is passed. Signing up again via `POST /api/newsletter/subscribe` clears `unsubscribed_at` and re-sends the confirmation.
 
 *(Verified live: missing email -> `400 {"error":"Please enter a valid email address."}`.)*
 

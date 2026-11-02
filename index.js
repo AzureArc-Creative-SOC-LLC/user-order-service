@@ -14,7 +14,7 @@ import { fengyuProxy } from './fengyu-proxy.js';
 import { fileURLToPath } from 'url'
 
 import { buildHasInvoiceMaskedItems, sendAffiliateRewardNotificationEmail, sendAffiliateWelcomeEmail, sendDeliveryInformationEmail, sendEmail, sendHasInvoiceEmail, sendKlymePaymentRejectedEmail, sendKlymePaymentSuccessfulEmail, sendNewsletterEntryEmail, sendOrderConfirmationEmail, sendPaymentDeclinedEmail, sendPaymentReminderEmail, sendPaymentScreenshotReceivedEmail, sendPaymentSuccessfulEmail, sendStatusUpdateEmail } from './emailService.js'
-import { sendBrandedOrderConfirmation, sendBrandedPasswordResetEmail, resolveBrandTheme, renderPasswordResetEmailHtml, DEFAULT_THEME } from './order-emails.js'
+import { sendBrandedOrderConfirmation, sendBrandedPasswordResetEmail, sendBrandedBenchWaitlistEmail, sendBrandedGiveawayEntryEmail, describeEmailTransports, resolveBrandTheme, renderPasswordResetEmailHtml, renderBenchWaitlistEmailHtml, renderBenchWaitlistEmailText, renderUnsubscribePageHtml, benchUnsubscribeHeaders, BRAND_THEMES, DEFAULT_THEME } from './order-emails.js'
 import { createDomainMiddleware } from './domainMiddleware.js'
 
 
@@ -4864,10 +4864,13 @@ app.post(['/api/user-orders', '/api/user-orders/'], upload.single('paymentScreen
         // Brand-themed confirmation: if the order came from one of the white-label
         // storefronts (matched by request Origin), send its themed email via Resend.
         // Falls back to the generic Alluvi confirmation when no storefront matches.
+        // The generic Alluvi email is only for orders that match no storefront. If a
+        // storefront matched but its branded send failed, don't send an Alluvi-branded
+        // email in its place — that would reveal the storefront is run by Alluvi.
         let brandedOk = false
         try {
           const b = await sendBrandedOrderConfirmation({ req, to: customerEmail, payload, orderNumber, customerName })
-          brandedOk = b?.success === true
+          brandedOk = b?.success === true || (!!b?.brand && b?.skipped !== 'no-brand-match')
           console.log('[user-orders] branded order email', { orderNumber, to: customerEmail, ...b })
         } catch (e) {
           console.error('[user-orders] branded order email failed (continuing)', e?.message || String(e))
@@ -5789,49 +5792,17 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
 
 
-    // Send via Resend so the email comes from that storefront's own domain
-    // (orders@<domain>) instead of the shared Gmail inbox.
+    // Send through that storefront's TurboSMTP account (or Resend if the
+    // domain isn't housed in one) so the email comes from orders@<domain>
+    // instead of the shared Gmail inbox.
 
     const branded = await sendBrandedPasswordResetEmail({ req, to: user.email, resetLink, userName: user.name, payload: brandPayload })
 
     if (!branded?.success) {
 
-      console.warn('[forgot-password] branded send failed/skipped, falling back to SMTP', branded)
-
-      // Fallback: same themed template, sent through the shared Gmail inbox
-      // (can't send "from" an arbitrary domain over SMTP, only Resend can).
-
-      const transporter = nodemailer.createTransport({
-
-        host: 'smtp.gmail.com',
-
-        port: 587,
-
-        secure: false,
-
-        auth: {
-
-          user: env('EMAIL_USER'),
-
-          pass: env('EMAIL_PASS'),
-
-        },
-
-      })
-
-
-
-      await transporter.sendMail({
-
-        from: `"${theme.brand}" <${env('EMAIL_USER')}>`,
-
-        to: user.email,
-
-        subject: `Reset Your ${theme.brand} Password`,
-
-        html: renderPasswordResetEmailHtml(theme, { userName: user.name || 'there', resetLink }),
-
-      })
+      // No shared-Gmail fallback: Gmail rewrites "From" to the shared inbox,
+      // which would expose it on a storefront's email. Log and fail quietly.
+      console.error('[forgot-password] branded send failed/skipped; no email sent', branded)
 
     }
 
@@ -9723,6 +9694,11 @@ app.get('/api/ai-chat/suggestions', (_req, res) => {
 
 // ─── Newsletter subscribe (public) ──────────────────────────────────────────
 
+// `source` tag sent by the Bench Programme "Join the programme" form. It reuses the
+// newsletter table (email-collection only — no subscription, pricing or scheduling)
+// but gets a "launching soon / early access" email instead of the giveaway one.
+const NEWSLETTER_SOURCE_BENCH_PROGRAMME = 'bench_programme'
+
 const NEWSLETTER_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000 // 1 hour
 const NEWSLETTER_RATE_LIMIT_MAX = 5
 const newsletterRateMap = new Map()
@@ -9737,12 +9713,6 @@ function newsletterRateLimit(ip) {
   arr.push(now)
   newsletterRateMap.set(ip, arr)
   return true
-}
-
-function escapeNewsletterHtml(s) {
-  return String(s || '').replace(/[&<>"']/g, (c) => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-  ))
 }
 
 let newsletterAdminTransporter = null
@@ -9764,54 +9734,6 @@ function getNewsletterAdminTransporter() {
   return newsletterAdminTransporter
 }
 
-async function sendNewsletterAdminNotification({ email, source, ipAddress, userAgent, originLabel }) {
-  const transporter = getNewsletterAdminTransporter()
-  if (!transporter) return { success: false, error: 'smtp-not-configured' }
-
-  const to = env('NEWSLETTER_NOTIFY_EMAIL', 'research@alluvi.org')
-  const fromName = env('EMAIL_FROM_NAME', 'Alluvi')
-  const fromEmail = env('EMAIL_FROM_EMAIL', env('EMAIL_USER', 'info@alluvi.org'))
-  const subject = `New giveaway entry — ${email}`
-  const submittedAt = new Date().toISOString()
-
-  const html = `
-    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:0 auto;padding:24px;background:#0a0a0a;color:#fff;border-radius:12px">
-      <h2 style="margin:0 0 16px;color:#FF8200">New Giveaway Entry</h2>
-      ${originLabel ? `<p style="color:#aaa;margin:0 0 16px">Source site: <strong>${escapeNewsletterHtml(originLabel)}</strong></p>` : ''}
-      <table style="width:100%;border-collapse:collapse">
-        <tr><td style="padding:8px 0;color:#aaa;width:35%">Email</td><td style="padding:8px 0"><a href="mailto:${escapeNewsletterHtml(email)}" style="color:#FF8200">${escapeNewsletterHtml(email)}</a></td></tr>
-        <tr><td style="padding:8px 0;color:#aaa">Source tag</td><td style="padding:8px 0">${escapeNewsletterHtml(source)}</td></tr>
-        <tr><td style="padding:8px 0;color:#aaa">IP</td><td style="padding:8px 0">${escapeNewsletterHtml(ipAddress || '—')}</td></tr>
-        <tr><td style="padding:8px 0;color:#aaa">User-Agent</td><td style="padding:8px 0;font-size:12px;color:#bbb">${escapeNewsletterHtml(userAgent || '—')}</td></tr>
-        <tr><td style="padding:8px 0;color:#aaa">Submitted</td><td style="padding:8px 0">${escapeNewsletterHtml(submittedAt)}</td></tr>
-      </table>
-    </div>
-  `
-
-  const text = [
-    `New Giveaway Entry${originLabel ? ` — ${originLabel}` : ''}`,
-    `Email: ${email}`,
-    `Source tag: ${source}`,
-    `IP: ${ipAddress || '—'}`,
-    `User-Agent: ${userAgent || '—'}`,
-    `Submitted: ${submittedAt}`,
-  ].join('\n')
-
-  try {
-    const info = await transporter.sendMail({
-      from: `${fromName} <${fromEmail}>`,
-      to,
-      replyTo: email,
-      subject,
-      text,
-      html,
-    })
-    return { success: true, messageId: info?.messageId }
-  } catch (e) {
-    return { success: false, error: e?.message || String(e) }
-  }
-}
-
 async function ensureNewsletterTable() {
   try {
     await pool.execute(`
@@ -9823,6 +9745,7 @@ async function ensureNewsletterTable() {
         ip_address VARCHAR(45),
         user_agent VARCHAR(512),
         is_winner TINYINT(1) NOT NULL DEFAULT 0,
+        unsubscribed_at DATETIME NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (id),
         UNIQUE KEY uniq_newsletter_email_source (email, source),
@@ -9836,7 +9759,90 @@ async function ensureNewsletterTable() {
       console.error('Failed to ensure newsletter_subscribers table:', msg)
     }
   }
+  // Existing deployments: add the column in place (same pattern as the other ensure*Columns helpers)
+  try {
+    await pool.execute('ALTER TABLE newsletter_subscribers ADD COLUMN unsubscribed_at DATETIME NULL')
+  } catch (e) {
+    const msg = String(e?.message || e).toLowerCase()
+    if (!msg.includes('duplicate column') && !msg.includes('exists')) {
+      console.error('Failed to ensure newsletter_subscribers.unsubscribed_at column:', msg)
+    }
+  }
 }
+
+// ─── Newsletter unsubscribe (signed one-click link) ─────────────────────────
+// The link carries the row id plus an HMAC over `id:email`, so it can't be
+// forged for another address and needs no token table. Verified against the
+// stored row at click time.
+const NEWSLETTER_UNSUBSCRIBE_SECRET = env('NEWSLETTER_UNSUBSCRIBE_SECRET', JWT_SECRET)
+
+function newsletterUnsubscribeToken(id, email) {
+  return crypto
+    .createHmac('sha256', NEWSLETTER_UNSUBSCRIBE_SECRET)
+    .update(`${Number(id)}:${String(email || '').trim().toLowerCase()}`)
+    .digest('hex')
+}
+
+function newsletterUnsubscribeUrl(id, email) {
+  const base = String(PUBLIC_API_BASE_URL || '').replace(/\/$/, '')
+  if (!base || !id) return null
+  return `${base}/api/newsletter/unsubscribe?id=${encodeURIComponent(id)}&t=${newsletterUnsubscribeToken(id, email)}`
+}
+
+// Theme for a stored subscriber row (no live storefront request at click time):
+// look the row's domain_id back up to its domain_name and match BRAND_THEMES.
+async function themeForSubscriberRow(row) {
+  const domainName = await resolveDomainName(row?.domain_id)
+  return BRAND_THEMES[String(domainName || '').toLowerCase()] || DEFAULT_THEME
+}
+
+async function handleNewsletterUnsubscribe(req, res) {
+  const id = parseInt(String(req.query.id ?? req.body?.id ?? ''), 10)
+  const token = String(req.query.t ?? req.body?.t ?? '').trim()
+  const isOneClickPost = req.method === 'POST'
+  const respond = (status, theme, httpStatus, email) => {
+    // RFC 8058 one-click POSTs come from the mail client, not a browser — a
+    // bare status is all they want. Browsers get the branded page.
+    if (isOneClickPost) return res.status(httpStatus).type('text/plain').send(status === 'invalid' ? 'invalid' : 'ok')
+    return res.status(httpStatus).type('html').send(renderUnsubscribePageHtml(theme, { status, email }))
+  }
+
+  try {
+    if (!id || Number.isNaN(id) || !/^[a-f0-9]{64}$/i.test(token)) {
+      return respond('invalid', DEFAULT_THEME, 400)
+    }
+
+    await ensureNewsletterTable()
+    const [rows] = await pool.execute(
+      'SELECT id, email, source, domain_id, unsubscribed_at FROM newsletter_subscribers WHERE id = ? LIMIT 1',
+      [id]
+    )
+    const row = rows?.[0]
+    if (!row) return respond('invalid', DEFAULT_THEME, 400)
+
+    const expected = Buffer.from(newsletterUnsubscribeToken(row.id, row.email), 'hex')
+    const given = Buffer.from(token, 'hex')
+    if (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) {
+      return respond('invalid', DEFAULT_THEME, 400)
+    }
+
+    const theme = await themeForSubscriberRow(row)
+    if (row.unsubscribed_at) return respond('already', theme, 200, row.email)
+
+    await pool.execute(
+      'UPDATE newsletter_subscribers SET unsubscribed_at = NOW() WHERE id = ? AND unsubscribed_at IS NULL',
+      [row.id]
+    )
+    console.log('[newsletter] unsubscribed', { id: row.id, source: row.source, via: isOneClickPost ? 'one-click' : 'link' })
+    return respond('done', theme, 200, row.email)
+  } catch (e) {
+    console.error(`${req.method} /api/newsletter/unsubscribe failed:`, e?.message || e)
+    return respond('error', DEFAULT_THEME, 500)
+  }
+}
+
+app.get('/api/newsletter/unsubscribe', handleNewsletterUnsubscribe)
+app.post('/api/newsletter/unsubscribe', express.urlencoded({ extended: false }), handleNewsletterUnsubscribe)
 
 app.post('/api/newsletter/subscribe', async (req, res) => {
   try {
@@ -9850,12 +9856,17 @@ app.post('/api/newsletter/subscribe', async (req, res) => {
     const email = String(body.email || '').trim().toLowerCase()
     const consent = body.consent === true || body.consent === 'true' || body.consent === 1 || body.consent === '1'
     const source = String(body.source || 'home_popup_reta').slice(0, 64) || 'home_popup_reta'
+    const isBenchProgramme = source === NEWSLETTER_SOURCE_BENCH_PROGRAMME
 
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
       return res.status(400).json({ error: 'Please enter a valid email address.' })
     }
     if (!consent) {
-      return res.status(400).json({ error: 'Consent is required to enter the giveaway.' })
+      return res.status(400).json({
+        error: isBenchProgramme
+          ? 'Consent is required to register your interest.'
+          : 'Consent is required to enter the giveaway.',
+      })
     }
 
     const ip =
@@ -9874,6 +9885,42 @@ app.post('/api/newsletter/subscribe', async (req, res) => {
 
     await ensureNewsletterTable()
 
+    // Confirmation email, fire-and-forget — never block the response on email.
+    // `subscriberId` is needed up front so the Bench email can carry its signed
+    // unsubscribe link.
+    const sendConfirmationEmail = (subscriberId) => {
+      ; (async () => {
+        try {
+          if (isBenchProgramme) {
+            const unsubscribeUrl = newsletterUnsubscribeUrl(subscriberId, email)
+            // Branded per storefront (same resolution as forgot-password): the
+            // storefront's TurboSMTP account (or Resend) as "<Brand> <orders@<domain>>".
+            // No shared-Gmail fallback: it would expose the shared inbox as the sender.
+            const branded = await sendBrandedBenchWaitlistEmail({ req, to: email, payload: body, unsubscribeUrl })
+            if (!branded?.success) {
+              console.error('[newsletter] branded bench email failed/skipped; no email sent', branded)
+            }
+          } else {
+            const productName = 'Retatrutide 40mg pen'
+            // White-label storefronts get their own branded email from orders@<domain>.
+            // Only a request matching no storefront (the main Alluvi site) uses the
+            // Alluvi template — a failed branded send must never fall back to it.
+            const branded = await sendBrandedGiveawayEntryEmail({
+              req, to: email, payload: body, productName,
+              unsubscribeUrl: newsletterUnsubscribeUrl(subscriberId, email),
+            })
+            if (branded?.skipped === 'no-brand-match') {
+              await sendNewsletterEntryEmail(email, { productName })
+            } else if (!branded?.success) {
+              console.error('[newsletter] branded giveaway email failed/skipped; no email sent', branded)
+            }
+          }
+        } catch (mailErr) {
+          console.error('[newsletter] entry email failed:', mailErr?.message || mailErr)
+        }
+      })()
+    }
+
     try {
       const [result] = await pool.execute(
         `INSERT INTO newsletter_subscribers
@@ -9882,45 +9929,29 @@ app.post('/api/newsletter/subscribe', async (req, res) => {
         [email, consent ? 1 : 0, source, ipStr || null, userAgent || null, req.domainId]
       )
 
-        // Fire-and-forget entry confirmation email — never block the response on email
-        ; (async () => {
-          try {
-            await sendNewsletterEntryEmail(email, { productName: 'Retatrutide 40mg pen' })
-          } catch (mailErr) {
-            console.error('[newsletter] entry email failed:', mailErr?.message || mailErr)
-          }
-        })()
-
-        // Fire-and-forget admin notification to research@alluvi.org
-        ; (async () => {
-          try {
-            const originHeader = String(req.get('origin') || req.get('referer') || '').trim()
-            let originLabel = ''
-            if (originHeader) {
-              try { originLabel = new URL(originHeader).hostname }
-              catch { originLabel = originHeader.slice(0, 80) }
-            }
-            const adminRes = await sendNewsletterAdminNotification({
-              email,
-              source,
-              ipAddress: ipStr,
-              userAgent,
-              originLabel,
-            })
-            if (!adminRes?.success) {
-              console.warn('[newsletter] admin notification skipped/failed:', adminRes?.error)
-            } else {
-              console.log('[newsletter] admin notification sent:', adminRes.messageId)
-            }
-          } catch (mailErr) {
-            console.error('[newsletter] admin notification failed:', mailErr?.message || mailErr)
-          }
-        })()
+      sendConfirmationEmail(result?.insertId)
 
       return res.status(200).json({ ok: true, id: result?.insertId })
     } catch (insertErr) {
       const msg = String(insertErr?.message || '').toLowerCase()
       if (insertErr?.code === 'ER_DUP_ENTRY' || msg.includes('duplicate')) {
+        // Someone who unsubscribed and signs up again gets re-activated and a
+        // fresh confirmation; a live subscriber is left alone.
+        const [existing] = await pool.execute(
+          'SELECT id, unsubscribed_at FROM newsletter_subscribers WHERE email = ? AND source = ? LIMIT 1',
+          [email, source]
+        )
+        const row = existing?.[0]
+        if (row?.unsubscribed_at) {
+          await pool.execute(
+            `UPDATE newsletter_subscribers
+                SET unsubscribed_at = NULL, consent = ?, ip_address = ?, user_agent = ?
+              WHERE id = ?`,
+            [consent ? 1 : 0, ipStr || null, userAgent || null, row.id]
+          )
+          sendConfirmationEmail(row.id)
+          return res.status(200).json({ ok: true, id: row.id, resubscribed: true })
+        }
         return res.status(200).json({ ok: true, already_subscribed: true })
       }
       throw insertErr
@@ -9934,6 +9965,8 @@ app.post('/api/newsletter/subscribe', async (req, res) => {
 // Start the server immediately, run schema checks in background
 app.listen(PORT, () => {
   console.log(`✅ User order creation service running on port ${PORT}`)
+  // Which TurboSMTP account houses which storefront domain (no secrets logged).
+  console.log('[email] branded transports:', JSON.stringify(describeEmailTransports()))
 })
 
   // Run schema checks in background (don't block server startup)

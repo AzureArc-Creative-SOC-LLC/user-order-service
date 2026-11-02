@@ -7,18 +7,107 @@
 // the matching brand theme and render a confirmation email that looks like that
 // specific site — instead of the generic Alluvi template.
 //
-// Security: the Resend API key is read from process.env.RESEND_API_KEY (never
-// hard-coded / committed). The sending domain in ORDER_EMAIL_FROM must be
-// verified in the Resend account tied to that key, or delivery will fail.
+// Transport: each white-label storefront domain is housed in one of up to three
+// TurboSMTP accounts (TURBOSMTP_{n}_USER/PASS/DOMAINS in .env). A branded email
+// is sent through the account whose *_DOMAINS lists theme.domain, as
+// "<Brand> <orders@<domain>>" — that domain must be verified (SPF + DKIM) under
+// Sender Domain Verification in that account or TurboSMTP rejects the send.
+// A domain listed in no account uses TURBOSMTP_FALLBACK_ACCOUNT if set,
+// otherwise Resend (RESEND_API_KEY) as before. Main Alluvi keeps its own
+// separate TurboSMTP account and is intentionally not configured here.
+//
+// Security: all credentials come from process.env (never hard-coded).
+
+import nodemailer from 'nodemailer'
 
 const RESEND_ENDPOINT = 'https://api.resend.com/emails'
+
+// ── TurboSMTP account resolution ─────────────────────────────────────────────
+const TURBOSMTP_MAX_ACCOUNTS = 3
+const turboTransports = new Map()
+
+function turboSmtpAccount(n) {
+  const user = String(process.env[`TURBOSMTP_${n}_USER`] || '').trim()
+  const pass = String(process.env[`TURBOSMTP_${n}_PASS`] || '').trim()
+  if (!user || !pass) return null
+  const domains = String(process.env[`TURBOSMTP_${n}_DOMAINS`] || '')
+    .split(',').map(d => d.trim().toLowerCase().replace(/^www\./, '')).filter(Boolean)
+  const port = Number(process.env.TURBOSMTP_PORT) || 587
+  return { n, user, pass, domains, host: String(process.env.TURBOSMTP_HOST || 'pro.turbo-smtp.com').trim(), port }
+}
+
+// Returns the TurboSMTP account that houses `domain`, the fallback account if
+// configured, or null (→ caller uses Resend).
+function resolveTurboSmtpAccount(domain) {
+  const d = String(domain || '').trim().toLowerCase().replace(/^www\./, '')
+  const accounts = []
+  for (let n = 1; n <= TURBOSMTP_MAX_ACCOUNTS; n++) { const a = turboSmtpAccount(n); if (a) accounts.push(a) }
+  if (!accounts.length) return null
+  const hit = d && accounts.find(a => a.domains.includes(d))
+  if (hit) return hit
+  const fb = Number(process.env.TURBOSMTP_FALLBACK_ACCOUNT)
+  return accounts.find(a => a.n === fb) || null
+}
+
+function turboSmtpTransport(account) {
+  const key = `${account.n}:${account.host}:${account.port}:${account.user}`
+  let t = turboTransports.get(key)
+  if (!t) {
+    t = nodemailer.createTransport({
+      host: account.host,
+      port: account.port,
+      secure: account.port === 465,
+      auth: { user: account.user, pass: account.pass },
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 20000,
+    })
+    turboTransports.set(key, t)
+  }
+  return t
+}
+
+async function sendViaTurboSmtp({ account, from, to, replyTo, subject, html, text, headers }) {
+  try {
+    const info = await turboSmtpTransport(account).sendMail({
+      from, to, subject, html, text,
+      ...(replyTo ? { replyTo } : {}),
+      ...(headers && typeof headers === 'object' ? { headers } : {}),
+    })
+    return { success: true, messageId: info?.messageId || null, transport: `turbosmtp:${account.n}` }
+  } catch (e) {
+    return { success: false, error: e?.response || e?.message || String(e), transport: `turbosmtp:${account.n}` }
+  }
+}
+
+// Picks the transport for a brand and sends. Returns { skipped } when nothing
+// is configured for it, else { success, messageId, transport }.
+async function sendBrandedEmail({ theme, to, replyTo, subject, html, text, headers, resendFrom }) {
+  const account = resolveTurboSmtpAccount(theme.domain)
+  if (account) {
+    const fromEmail = `orders@${theme.domain}`
+    return sendViaTurboSmtp({ account, from: `${theme.brand} <${fromEmail}>`, to, replyTo: replyTo || fromEmail, subject, html, text, headers })
+  }
+  const apiKey = process.env.RESEND_API_KEY
+  if (!apiKey) return { skipped: 'no-transport' }
+  const fromEmail = resendFrom || `orders@${theme.domain}`
+  const r = await sendViaResend({ apiKey, from: `${theme.brand} <${fromEmail}>`, to, replyTo: replyTo || fromEmail, subject, html, text, headers })
+  return { ...r, transport: 'resend' }
+}
+
+// Non-secret summary for startup logs / debugging.
+function describeEmailTransports() {
+  const accounts = []
+  for (let n = 1; n <= TURBOSMTP_MAX_ACCOUNTS; n++) { const a = turboSmtpAccount(n); if (a) accounts.push({ account: n, domains: a.domains }) }
+  return { turbosmtp: accounts, fallbackAccount: process.env.TURBOSMTP_FALLBACK_ACCOUNT || null, resend: !!process.env.RESEND_API_KEY }
+}
 
 // ── Per-brand themes (extracted from each site's design tokens) ──────────────
 // Keyed by bare domain (no www). Each storefront is matched by its Origin host.
 const BRAND_THEMES = {
   'luxenlabs.shop': {
     key: 'luxen', brand: 'Luxen', domain: 'luxenlabs.shop',
-    tagline: 'Advancing lab research', currency: '$',
+    tagline: 'Reclaim Your Results.', currency: '$',
     bg: '#ffffff', surface: '#faf8f4', heading: '#14202a', body: '#14202a',
     muted: '#5f6c6c', accent: '#4e493e', accentText: '#ffffff', border: '#e1e9e8',
     fontHeading: "'Space Grotesk', Arial, sans-serif",
@@ -26,7 +115,7 @@ const BRAND_THEMES = {
   },
   'peptiqlabs.io': {
     key: 'peptiq', brand: 'Peptiq', domain: 'peptiqlabs.io',
-    tagline: 'Engineered for research precision', currency: '$',
+    tagline: 'Driven by Science, Proven by You.', currency: '$',
     bg: '#ffffff', surface: '#faf8f4', heading: '#14202a', body: '#14202a',
     muted: '#5f6c6c', accent: '#4e493e', accentText: '#ffffff', border: '#e1e9e8',
     fontHeading: "'Space Grotesk', Arial, sans-serif",
@@ -34,7 +123,7 @@ const BRAND_THEMES = {
   },
   'zyrahealthcare.com': {
     key: 'zyra', brand: 'Zyra Labs', domain: 'zyrahealthcare.com',
-    tagline: 'Research-grade peptides, held to a higher standard.', currency: '$',
+    tagline: 'Unlock Your Ultimate Self.', currency: '$',
     bg: '#ffffff', surface: '#faf8f4', heading: '#14202a', body: '#14202a',
     muted: '#5f6c6c', accent: '#4e493e', accentText: '#ffffff', border: '#e1e9e8',
     fontHeading: "'Space Grotesk', Arial, sans-serif",
@@ -42,7 +131,7 @@ const BRAND_THEMES = {
   },
     'jupyterlabs.net': {
     key: 'jupyterlabs', brand: 'Jupyter Labs', domain: 'jupyterlabs.net',
-    tagline: 'Pharmaceutical rigor, in every vial.', currency: '$',
+    tagline: 'Transform From the Inside Out.', currency: '$',
     bg: '#ffffff', surface: '#faf8f4', heading: '#14202a', body: '#14202a',
     muted: '#5f6c6c', accent: '#4e493e', accentText: '#ffffff', border: '#e1e9e8',
     fontHeading: "'Space Grotesk', Arial, sans-serif",
@@ -51,7 +140,7 @@ const BRAND_THEMES = {
 
   'vyralabs.co': {
     key: 'vyra', brand: 'Vyra Health', domain: 'vyralabs.co',
-    tagline: 'Weight loss, reviewed by clinicians', currency: '$',
+    tagline: 'Fuel the Change.', currency: '$',
     bg: '#ffffff', surface: '#faf8f4', heading: '#14202a', body: '#14202a',
     muted: '#5f6c6c', accent: '#4e493e', accentText: '#ffffff', border: '#e1e9e8',
     fontHeading: "'Space Grotesk', Arial, sans-serif",
@@ -59,15 +148,15 @@ const BRAND_THEMES = {
   },
   'lumivexlabs.co': {
     key: 'lumivex', brand: 'Lumivex Labs', domain: 'lumivexlabs.co',
-    tagline: 'High-purity research compounds, precisely made.', currency: '$',
+    tagline: 'Modern Science for Modern Wellness.', currency: '$',
     bg: '#ffffff', surface: '#faf8f4', heading: '#14202a', body: '#14202a',
     muted: '#5f6c6c', accent: '#4e493e', accentText: '#ffffff', border: '#e1e9e8',
     fontHeading: "'Space Grotesk', Arial, sans-serif",
     fontBody: "'Space Grotesk', Arial, sans-serif",
   },
   'noverafitness.com': {
-    key: 'novera', brand: 'Novera Fitneess', domain: 'noverafitness.com',
-    tagline: 'Research-grade peptides & wellness science', currency: '$',
+    key: 'novera', brand: 'Novera Fitness', domain: 'noverafitness.com',
+    tagline: 'Target the Change.', currency: '$',
     bg: '#ffffff', surface: '#faf8f4', heading: '#14202a', body: '#14202a',
     muted: '#5f6c6c', accent: '#4e493e', accentText: '#ffffff', border: '#e1e9e8',
     fontHeading: "'Space Grotesk', Arial, sans-serif",
@@ -84,7 +173,7 @@ const BRAND_THEMES = {
   
   'vorahealthcare.com': {
     key: 'vora', brand: 'Vora Healthcare', domain: 'vorahealthcare.com',
-    tagline: 'Premium research peptides for laboratory R&D', currency: '$',
+    tagline: 'Your Body, Upgraded.', currency: '$',
     bg: '#ffffff', surface: '#faf8f4', heading: '#14202a', body: '#14202a',
     muted: '#5f6c6c', accent: '#4e493e', accentText: '#ffffff', border: '#e1e9e8',
     fontHeading: "'Space Grotesk', Arial, sans-serif",
@@ -92,7 +181,7 @@ const BRAND_THEMES = {
   },
   'liorahealthcare.com': {
     key: 'liora', brand: 'Liora Healthcare', domain: 'liorahealthcare.com',
-    tagline: 'Research-grade peptide supply', currency: '$ ',
+    tagline: 'Redefining the Standard.', currency: '$',
     bg: '#ffffff', surface: '#faf8f4', heading: '#14202a', body: '#14202a',
     muted: '#5f6c6c', accent: '#4e493e', accentText: '#ffffff', border: '#e1e9e8',
     fontHeading: "'Space Grotesk', Arial, sans-serif",
@@ -100,7 +189,7 @@ const BRAND_THEMES = {
   },
   'peptivalabs.uk': {
     key: 'peptiva', brand: 'Peptiva Labs', domain: 'peptivalabs.uk',
-    tagline: 'Engineered for research precision', currency: '$',
+    tagline: 'Designed for the Dedicated.', currency: '$',
     bg: '#ffffff', surface: '#faf8f4', heading: '#14202a', body: '#14202a',
     muted: '#5f6c6c', accent: '#4e493e', accentText: '#ffffff', border: '#e1e9e8',
     fontHeading: "'Space Grotesk', Arial, sans-serif",
@@ -118,7 +207,7 @@ const BRAND_BY_KEY = Object.fromEntries(
 // storefronts get — nothing should ever fall back to a bespoke design.
 const DEFAULT_THEME = {
   key: 'alluvi', brand: 'Alluvi', domain: 'alluvi.store',
-  tagline: 'Premium Research Peptides', currency: '£',
+  tagline: 'Fuel the Shift.', currency: '£',
     bg: '#ffffff', surface: '#faf8f4', heading: '#14202a', body: '#14202a',
     muted: '#5f6c6c', accent: '#4e493e', accentText: '#ffffff', border: '#e1e9e8',
     fontHeading: "'Space Grotesk', Arial, sans-serif",
@@ -317,14 +406,18 @@ function renderOrderEmailText(theme, order) {
   return lines.join('\n')
 }
 
-async function sendViaResend({ apiKey, from, to, replyTo, subject, html, text }) {
+async function sendViaResend({ apiKey, from, to, replyTo, subject, html, text, headers }) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 10000)
   try {
     const res = await fetch(RESEND_ENDPOINT, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from, to: [to], subject, html, text, ...(replyTo ? { reply_to: replyTo } : {}) }),
+      body: JSON.stringify({
+        from, to: [to], subject, html, text,
+        ...(replyTo ? { reply_to: replyTo } : {}),
+        ...(headers && typeof headers === 'object' ? { headers } : {}),
+      }),
       signal: controller.signal,
     })
     const data = await res.json().catch(() => ({}))
@@ -339,28 +432,24 @@ async function sendViaResend({ apiKey, from, to, replyTo, subject, html, text })
 
 // Main entry: send a brand-themed order confirmation.
 // Returns { skipped } when no storefront matches (caller should fall back to the
-// generic email) or when Resend isn't configured. Returns { success } on send.
+// generic email) or when no transport is configured. Returns { success } on send.
 export async function sendBrandedOrderConfirmation({ req, to, payload, orderNumber, customerName }) {
   const theme = resolveBrandTheme(req, payload || {})
   if (!theme) return { skipped: 'no-brand-match' }
 
-  const apiKey = process.env.RESEND_API_KEY
-  if (!apiKey) return { skipped: 'no-resend-key', brand: theme.key }
   if (!to || !String(to).includes('@')) return { skipped: 'no-recipient', brand: theme.key }
 
   const order = orderViewFromPayload(payload || {}, String(orderNumber || '').trim(), customerName)
-  const fromEmail = process.env.ORDER_EMAIL_FROM || process.env.EMAIL_FROM_EMAIL || 'orders@alluvi.org'
-  const from = `${theme.brand} <${fromEmail}>`
   const subject = `Your ${theme.brand} order ${order.orderNumber} is confirmed`
 
-  const result = await sendViaResend({
-    apiKey,
-    from,
+  const result = await sendBrandedEmail({
+    theme,
     to,
-    replyTo: fromEmail,
     subject,
     html: renderOrderEmailHtml(theme, order),
     text: renderOrderEmailText(theme, order),
+    // Resend path only: TurboSMTP always sends as orders@<theme.domain>.
+    resendFrom: process.env.ORDER_EMAIL_FROM || process.env.EMAIL_FROM_EMAIL || 'orders@alluvi.org',
   })
   return { ...result, brand: theme.key }
 }
@@ -441,25 +530,19 @@ function renderPasswordResetEmailText(theme, { userName, resetLink }) {
 // theme so nothing ever falls back to a bespoke, unbranded design) — and sends
 // from that storefront's own domain (orders@<domain>) so the "From" address
 // matches the site the user actually signed up on.
-// Returns { skipped } when Resend isn't configured (caller should fall back to
-// a direct-SMTP send). Returns { success } on send.
+// Returns { skipped } when no transport is configured (caller should fall back
+// to a direct-SMTP send). Returns { success } on send.
 export async function sendBrandedPasswordResetEmail({ req, to, resetLink, userName, payload }) {
   const theme = resolveBrandTheme(req, payload || {}) || DEFAULT_THEME
 
-  const apiKey = process.env.RESEND_API_KEY
-  if (!apiKey) return { skipped: 'no-resend-key', brand: theme.key, theme }
   if (!to || !String(to).includes('@')) return { skipped: 'no-recipient', brand: theme.key, theme }
 
-  const fromEmail = `orders@${theme.domain}`
-  const from = `${theme.brand} <${fromEmail}>`
   const subject = `Reset Your ${theme.brand} Password`
   const view = { userName: userName || 'there', resetLink }
 
-  const result = await sendViaResend({
-    apiKey,
-    from,
+  const result = await sendBrandedEmail({
+    theme,
     to,
-    replyTo: fromEmail,
     subject,
     html: renderPasswordResetEmailHtml(theme, view),
     text: renderPasswordResetEmailText(theme, view),
@@ -467,4 +550,232 @@ export async function sendBrandedPasswordResetEmail({ req, to, resetLink, userNa
   return { ...result, brand: theme.key, theme }
 }
 
-export { BRAND_THEMES, DEFAULT_THEME, resolveBrandTheme, renderOrderEmailHtml, renderPasswordResetEmailHtml, renderPasswordResetEmailText }
+// ── Bench Programme waitlist email — same light, card-based look ─────────────
+// Sent when a visitor registers interest via the "Join the programme" form
+// (POST /api/newsletter/subscribe with source=bench_programme). Email-collection
+// only: deliberately quotes no programme terms, since none are confirmed yet.
+
+// `unsubscribeUrl` is the signed one-click link built by the subscribe route
+// (GET /api/newsletter/unsubscribe?id=&t=). Falls back to a mailto only if the
+// caller couldn't build one.
+function renderBenchWaitlistEmailHtml(theme, { unsubscribeUrl } = {}) {
+  const t = theme
+  const unsubscribeHref = unsubscribeUrl || `mailto:orders@${t.domain}?subject=Unsubscribe`
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="x-apple-disable-message-reformatting"><title>Welcome to the ${escapeHtml(t.brand)} Bench Programme</title></head>
+<body style="margin:0;padding:0;background:${t.bg};">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">The ${escapeHtml(t.brand)} Bench Programme is launching soon — you're on the early list.</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${t.bg};padding:32px 12px;">
+  <tr><td align="center">
+    <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:600px;background:${t.surface};border:1px solid ${t.border};border-radius:14px;overflow:hidden;">
+      <!-- Header -->
+      <tr><td style="padding:34px 40px 24px;text-align:center;border-bottom:1px solid ${t.border};">
+        <div style="font-family:${t.fontHeading};font-size:24px;letter-spacing:3px;font-weight:700;color:${t.heading};text-transform:uppercase;">${escapeHtml(t.brand)}</div>
+        <div style="font-family:${t.fontBody};font-size:13px;color:${t.muted};margin-top:8px;">${escapeHtml(t.tagline)}</div>
+      </td></tr>
+      <!-- Message -->
+      <tr><td style="padding:36px 40px 8px;">
+        <h1 style="font-family:${t.fontHeading};font-size:26px;line-height:1.25;color:${t.heading};margin:0 0 12px;font-weight:700;">Welcome aboard!</h1>
+        <p style="font-family:${t.fontBody};font-size:15px;line-height:1.6;color:${t.body};margin:0 0 14px;">Our <strong>Bench Programme</strong> is launching soon, and we're thrilled to have you with us from day one.</p>
+        <p style="font-family:${t.fontBody};font-size:15px;line-height:1.6;color:${t.body};margin:0;">Expect early access and special benefits delivered straight to your inbox before public release.</p>
+      </td></tr>
+      <tr><td style="padding:22px 40px 0;">
+        <p style="font-family:${t.fontBody};font-size:13px;line-height:1.6;color:${t.muted};margin:0;">There's nothing you need to do right now — we'll email you here as soon as it's time.</p>
+      </td></tr>
+      <tr><td style="padding:26px 40px 0;">
+        <p style="font-family:${t.fontBody};font-size:15px;line-height:1.6;color:${t.body};margin:0;">Kind regards,<br>The ${escapeHtml(t.brand)} team</p>
+      </td></tr>
+      <!-- Footer -->
+      <tr><td style="padding:30px 40px 34px;text-align:center;">
+        <div style="font-family:${t.fontBody};font-size:12px;color:${t.muted};line-height:1.6;border-top:1px solid ${t.border};padding-top:20px;">
+          ${escapeHtml(t.brand)} &middot; <a href="https://${escapeHtml(t.domain)}" style="color:${t.muted};">${escapeHtml(t.domain)}</a><br>
+          &copy; ${new Date().getFullYear()} ${escapeHtml(t.brand)}. All rights reserved.<br>
+          You're receiving this because you registered interest in the Bench Programme at ${escapeHtml(t.domain)}.
+          <a href="${escapeHtml(unsubscribeHref)}" style="color:${t.muted};">Unsubscribe</a>
+        </div>
+      </td></tr>
+    </table>
+  </td></tr>
+</table>
+</body></html>`
+}
+
+function renderBenchWaitlistEmailText(theme, { unsubscribeUrl } = {}) {
+  const lines = [
+    `${theme.brand} — Welcome to the Bench Programme`,
+    ``,
+    `Welcome aboard! Our Bench Programme is launching soon, and we're thrilled`,
+    `to have you with us from day one.`,
+    ``,
+    `Expect early access and special benefits delivered straight to your inbox`,
+    `before public release.`,
+    ``,
+    `There's nothing you need to do right now — we'll email you here as soon`,
+    `as it's time.`,
+    ``,
+    `Kind regards,`,
+    `The ${theme.brand} team`,
+    ``,
+    `${theme.brand} · ${theme.domain}`,
+    `You're receiving this because you registered interest in the Bench Programme at ${theme.domain}.`,
+    unsubscribeUrl ? `Unsubscribe: ${unsubscribeUrl}` : `To opt out, reply with "unsubscribe".`,
+  ]
+  return lines.join('\n')
+}
+
+// Landing page shown after the unsubscribe link is followed. `status` is one of
+// 'done' (just unsubscribed), 'already' (was already off the list) or
+// 'invalid' (bad/forged link).
+function renderUnsubscribePageHtml(theme, { status, email } = {}) {
+  const t = theme
+  const copy = {
+    done: { title: "You've been unsubscribed", body: `${email ? `<strong>${escapeHtml(email)}</strong> has` : 'This address has'} been removed from the ${escapeHtml(t.brand)} email list. You won't receive any further emails from it.` },
+    already: { title: "You're already unsubscribed", body: `This address was already removed from the ${escapeHtml(t.brand)} email list. No further action is needed.` },
+    invalid: { title: 'This link is not valid', body: `We couldn't verify this unsubscribe link. Please use the link from the most recent email we sent you, or contact us at <a href="mailto:orders@${escapeHtml(t.domain)}" style="color:${t.accent};">orders@${escapeHtml(t.domain)}</a>.` },
+  }[status] || { title: 'Something went wrong', body: 'Please try again later.' }
+
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex"><title>${escapeHtml(copy.title)} — ${escapeHtml(t.brand)}</title></head>
+<body style="margin:0;padding:0;background:${t.bg};">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${t.bg};padding:48px 12px;min-height:100vh;">
+  <tr><td align="center">
+    <table role="presentation" width="520" cellpadding="0" cellspacing="0" style="width:520px;max-width:520px;background:${t.surface};border:1px solid ${t.border};border-radius:14px;overflow:hidden;">
+      <tr><td style="padding:34px 40px 24px;text-align:center;border-bottom:1px solid ${t.border};">
+        <div style="font-family:${t.fontHeading};font-size:24px;letter-spacing:3px;font-weight:700;color:${t.heading};text-transform:uppercase;">${escapeHtml(t.brand)}</div>
+        <div style="font-family:${t.fontBody};font-size:13px;color:${t.muted};margin-top:8px;">${escapeHtml(t.tagline)}</div>
+      </td></tr>
+      <tr><td style="padding:36px 40px 8px;">
+        <h1 style="font-family:${t.fontHeading};font-size:24px;line-height:1.25;color:${t.heading};margin:0 0 12px;font-weight:700;">${escapeHtml(copy.title)}</h1>
+        <p style="font-family:${t.fontBody};font-size:15px;line-height:1.6;color:${t.body};margin:0;">${copy.body}</p>
+      </td></tr>
+      <tr><td style="padding:26px 40px 36px;text-align:center;">
+        <a href="https://${escapeHtml(t.domain)}" style="display:inline-block;background:${t.accent};color:${t.accentText};font-family:${t.fontBody};font-size:14px;font-weight:700;text-decoration:none;padding:13px 28px;border-radius:10px;">Back to ${escapeHtml(t.brand)}</a>
+      </td></tr>
+    </table>
+  </td></tr>
+</table>
+</body></html>`
+}
+
+// Main entry: send the brand-themed Bench Programme waitlist email. Resolves the
+// storefront the same way password resets do (explicit payload brand/store/
+// domain, then Origin/Referer, then the generic theme) and sends as that brand
+// from orders@<domain>. Returns { skipped } when Resend isn't configured so the
+// caller can fall back to SMTP with the same themed HTML.
+// RFC 8058 one-click headers: Gmail/Apple Mail show a native "Unsubscribe"
+// button and POST to the URL without the user opening the page.
+function benchUnsubscribeHeaders(theme, unsubscribeUrl) {
+  const mailto = `mailto:orders@${theme.domain}?subject=Unsubscribe`
+  return {
+    'List-Unsubscribe': unsubscribeUrl ? `<${unsubscribeUrl}>, <${mailto}>` : `<${mailto}>`,
+    ...(unsubscribeUrl ? { 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' } : {}),
+  }
+}
+
+export async function sendBrandedBenchWaitlistEmail({ req, to, payload, unsubscribeUrl }) {
+  const theme = resolveBrandTheme(req, payload || {}) || DEFAULT_THEME
+
+  if (!to || !String(to).includes('@')) return { skipped: 'no-recipient', brand: theme.key, theme }
+
+  const subject = `Welcome aboard — the ${theme.brand} Bench Programme is coming soon`
+
+  const result = await sendBrandedEmail({
+    theme,
+    to,
+    subject,
+    html: renderBenchWaitlistEmailHtml(theme, { unsubscribeUrl }),
+    text: renderBenchWaitlistEmailText(theme, { unsubscribeUrl }),
+    headers: benchUnsubscribeHeaders(theme, unsubscribeUrl),
+  })
+  return { ...result, brand: theme.key, theme }
+}
+
+// ── Giveaway entry confirmation — same card-based look, branded per storefront ─
+// Sent when a visitor enters the giveaway on a white-label storefront
+// (POST /api/newsletter/subscribe, any source other than bench_programme).
+// The main Alluvi site keeps its own template (emailService.sendNewsletterEntryEmail).
+
+function renderGiveawayEntryEmailHtml(theme, { productName, unsubscribeUrl } = {}) {
+  const t = theme
+  const prize = escapeHtml(productName || 'prize')
+  const unsubscribeHref = unsubscribeUrl || `mailto:orders@${t.domain}?subject=Unsubscribe`
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="x-apple-disable-message-reformatting"><title>You're in the ${escapeHtml(t.brand)} draw</title></head>
+<body style="margin:0;padding:0;background:${t.bg};">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">We've got you down for this month's draw.</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${t.bg};padding:32px 12px;">
+  <tr><td align="center">
+    <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:600px;background:${t.surface};border:1px solid ${t.border};border-radius:14px;overflow:hidden;">
+      <!-- Header -->
+      <tr><td style="padding:34px 40px 24px;text-align:center;border-bottom:1px solid ${t.border};">
+        <div style="font-family:${t.fontHeading};font-size:24px;letter-spacing:3px;font-weight:700;color:${t.heading};text-transform:uppercase;">${escapeHtml(t.brand)}</div>
+        <div style="font-family:${t.fontBody};font-size:13px;color:${t.muted};margin-top:8px;">${escapeHtml(t.tagline)}</div>
+      </td></tr>
+      <!-- Message -->
+      <tr><td style="padding:36px 40px 8px;">
+        <h1 style="font-family:${t.fontHeading};font-size:26px;line-height:1.25;color:${t.heading};margin:0 0 12px;font-weight:700;">Thanks for entering</h1>
+        <p style="font-family:${t.fontBody};font-size:15px;line-height:1.6;color:${t.body};margin:0 0 14px;">We've got you down for this month's draw. The prize is a free <strong>${prize}</strong>, picked at the end of the month.</p>
+        <p style="font-family:${t.fontBody};font-size:15px;line-height:1.6;color:${t.body};margin:0;">If your email is the one drawn, you'll hear from us directly at this address. There's nothing else you need to do right now.</p>
+      </td></tr>
+      <tr><td style="padding:26px 40px 0;">
+        <p style="font-family:${t.fontBody};font-size:15px;line-height:1.6;color:${t.body};margin:0;">Good luck,<br>The ${escapeHtml(t.brand)} team</p>
+      </td></tr>
+      <!-- Footer -->
+      <tr><td style="padding:30px 40px 34px;text-align:center;">
+        <div style="font-family:${t.fontBody};font-size:12px;color:${t.muted};line-height:1.6;border-top:1px solid ${t.border};padding-top:20px;">
+          ${escapeHtml(t.brand)} &middot; <a href="https://${escapeHtml(t.domain)}" style="color:${t.muted};">${escapeHtml(t.domain)}</a><br>
+          &copy; ${new Date().getFullYear()} ${escapeHtml(t.brand)}. All rights reserved.<br>
+          You're receiving this because you entered the giveaway at ${escapeHtml(t.domain)}.
+          <a href="${escapeHtml(unsubscribeHref)}" style="color:${t.muted};">Unsubscribe</a>
+        </div>
+      </td></tr>
+    </table>
+  </td></tr>
+</table>
+</body></html>`
+}
+
+function renderGiveawayEntryEmailText(theme, { productName, unsubscribeUrl } = {}) {
+  return [
+    `${theme.brand} — Thanks for entering`,
+    ``,
+    `We've got you down for this month's draw.`,
+    `The prize is a free ${productName || 'prize'}, picked at the end of the month.`,
+    ``,
+    `If your email is the one drawn, you'll hear from us directly at this`,
+    `address. Nothing else for you to do right now.`,
+    ``,
+    `Good luck,`,
+    `The ${theme.brand} team`,
+    ``,
+    `${theme.brand} · ${theme.domain}`,
+    `You're receiving this because you entered the giveaway at ${theme.domain}.`,
+    unsubscribeUrl ? `Unsubscribe: ${unsubscribeUrl}` : `To opt out, reply with "unsubscribe".`,
+  ].join('\n')
+}
+
+// Returns { skipped: 'no-brand-match' } when the request isn't from a white-label
+// storefront, so the caller can use the main Alluvi giveaway template instead.
+// Otherwise sends as that brand from orders@<domain> and returns { success, ... }.
+export async function sendBrandedGiveawayEntryEmail({ req, to, payload, productName, unsubscribeUrl }) {
+  const theme = resolveBrandTheme(req, payload || {})
+  if (!theme) return { skipped: 'no-brand-match' }
+
+  if (!to || !String(to).includes('@')) return { skipped: 'no-recipient', brand: theme.key }
+
+  const result = await sendBrandedEmail({
+    theme,
+    to,
+    // Conversational subject avoids classic promo triggers ("free", "giveaway", "win")
+    subject: 'Got your entry',
+    html: renderGiveawayEntryEmailHtml(theme, { productName, unsubscribeUrl }),
+    text: renderGiveawayEntryEmailText(theme, { productName, unsubscribeUrl }),
+    headers: benchUnsubscribeHeaders(theme, unsubscribeUrl),
+  })
+  return { ...result, brand: theme.key }
+}
+
+export { BRAND_THEMES, DEFAULT_THEME, resolveBrandTheme, resolveTurboSmtpAccount, describeEmailTransports, renderOrderEmailHtml, renderPasswordResetEmailHtml, renderPasswordResetEmailText, renderBenchWaitlistEmailHtml, renderBenchWaitlistEmailText, renderUnsubscribePageHtml, benchUnsubscribeHeaders }
