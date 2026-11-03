@@ -1118,7 +1118,11 @@ const EXTERNAL_INVOICE_URL = env('EXTERNAL_INVOICE_URL', '')
 
 const app = express()
 
-app.set('trust proxy', true)
+// nginx appends to any client-supplied X-Forwarded-For, so 'true' lets callers spoof req.ip
+// (and dodge the rate limits below). Set TRUST_PROXY_HOPS to the number of proxies in front
+// of this service (e.g. 1 = nginx only, 2 = Cloudflare + nginx).
+const TRUST_PROXY_HOPS = Number.parseInt(process.env.TRUST_PROXY_HOPS || '', 10)
+app.set('trust proxy', Number.isFinite(TRUST_PROXY_HOPS) && TRUST_PROXY_HOPS >= 0 ? TRUST_PROXY_HOPS : true)
 
 app.use(express.json({ limit: '5mb' }))
 
@@ -1182,6 +1186,55 @@ const domainMiddleware = createDomainMiddleware({
 })
 app.use(domainMiddleware)
 
+// ── Rate limiting ───────────────────────────────────────────────────────
+// Fixed-window, in-memory (single pm2 fork, so no shared store). Limits are per key
+// (client IP, or IP+email for credential flows).
+function rateLimit({ windowMs, max, key = (req) => req.ip, message }) {
+  const hits = new Map() // key -> { count, resetAt }
+  setInterval(() => {
+    const now = Date.now()
+    for (const [k, v] of hits) if (v.resetAt <= now) hits.delete(k)
+  }, Math.min(windowMs, 60_000)).unref()
+  return (req, res, next) => {
+    const k = String(key(req) || 'unknown')
+    const now = Date.now()
+    let rec = hits.get(k)
+    if (!rec || rec.resetAt <= now) {
+      rec = { count: 0, resetAt: now + windowMs }
+      hits.set(k, rec)
+    }
+    rec.count += 1
+    if (rec.count > max) {
+      res.set('Retry-After', String(Math.ceil((rec.resetAt - now) / 1000)))
+      return res.status(429).json({ error: message || 'Too many requests. Please try again later.' })
+    }
+    return next()
+  }
+}
+const bodyEmail = (req) => String(req.body?.email || '').trim().toLowerCase().slice(0, 150)
+
+const MIN = 60_000
+const HOUR = 60 * MIN
+// Credential flows: limit per IP and per target email (stops both one-IP floods and
+// distributed guessing against a single account).
+const loginIpLimiter = rateLimit({ windowMs: 15 * MIN, max: 20 })
+const loginEmailLimiter = rateLimit({ windowMs: 15 * MIN, max: 8, key: (req) => 'login:' + bodyEmail(req), message: 'Too many login attempts. Please try again later.' })
+const registerLimiter = rateLimit({ windowMs: HOUR, max: 10 })
+const forgotIpLimiter = rateLimit({ windowMs: HOUR, max: 10 })
+const forgotEmailLimiter = rateLimit({ windowMs: HOUR, max: 3, key: (req) => 'forgot:' + bodyEmail(req) })
+const resetPasswordLimiter = rateLimit({ windowMs: 15 * MIN, max: 10 })
+const orderCreateLimiter = rateLimit({ windowMs: HOUR, max: 30 })
+const paymentLimiter = rateLimit({ windowMs: 10 * MIN, max: 40 })
+const lookupLimiter = rateLimit({ windowMs: MIN, max: 30 })
+const uploadLimiter = rateLimit({ windowMs: 10 * MIN, max: 20 })
+// Broad ceiling for everything under /api. Payment-provider webhooks/callbacks are exempt
+// (they come from a few provider IPs and must never be dropped).
+const globalApiLimiter = rateLimit({ windowMs: MIN, max: 300 })
+app.use('/api', (req, res, next) => {
+  if (/\/(webhook|callback)\/?$/i.test(req.path)) return next()
+  return globalApiLimiter(req, res, next)
+})
+
 // Resolves a domains.id back to its domain_name for building storefront links
 // in code paths with no live req (webhooks, cron/reminder jobs).
 const domainNameCache = new Map() // id -> name, populated lazily
@@ -1207,6 +1260,14 @@ async function sendOrThrow(sendFn, ...args) {
   const r = await sendFn(...args)
   if (!r?.success) throw new Error(r?.error || 'email send failed')
   return r
+}
+
+// Admin-only: valid login token whose role is 'admin'.
+function requireAdmin(req, res, next) {
+  return requireUserAuth(req, res, () => {
+    if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Forbidden' })
+    return next()
+  })
 }
 
 // Brand theme for a storefront domain name, or null for the main Alluvi site /
@@ -1330,13 +1391,14 @@ app.get(['/api/wallet', '/api/auth/wallet', '/api/user-orders/wallet'], requireU
       connection.release()
     }
   } catch (e) {
-    return res.status(500).json({ error: e?.message || 'Failed to load wallet' })
+    console.error('[user-order-service] Failed to load wallet:', e?.message || e)
+    return res.status(500).json({ error: 'Failed to load wallet' })
   }
 })
 
 
 
-app.post(['/api/promos/validate', '/api/auth/promos/validate'], async (req, res) => {
+app.post(['/api/promos/validate', '/api/auth/promos/validate'], lookupLimiter, async (req, res) => {
   let connection
   try {
     const code = String(req.body?.code || req.body?.promoCode || '').trim().toUpperCase()
@@ -1347,7 +1409,8 @@ app.post(['/api/promos/validate', '/api/auth/promos/validate'], async (req, res)
     if (!Number.isFinite(percent) || percent <= 0) return res.status(404).json({ ok: false, valid: false })
     return res.json({ ok: true, valid: true, percent })
   } catch (e) {
-    return res.status(500).json({ ok: false, error: e?.message || 'Failed to validate promo' })
+    console.error('[user-order-service] Failed to validate promo:', e?.message || e)
+    return res.status(500).json({ ok: false, error: 'Failed to validate promo' })
   } finally {
     if (connection) connection.release()
   }
@@ -1391,7 +1454,8 @@ app.get(['/api/affiliate/status', '/api/auth/affiliate/status'], requireUserAuth
       },
     })
   } catch (e) {
-    return res.status(500).json({ ok: false, error: e?.message || 'Failed to load affiliate status' })
+    console.error('[user-order-service] Failed to load affiliate status:', e?.message || e)
+    return res.status(500).json({ ok: false, error: 'Failed to load affiliate status' })
   } finally {
     if (connection) connection.release()
   }
@@ -1564,7 +1628,8 @@ app.post(['/api/affiliate/request', '/api/auth/affiliate/request'], requireUserA
         // ignore
       }
     }
-    return res.status(500).json({ ok: false, error: e?.message || 'Failed to request affiliate' })
+    console.error('[user-order-service] Failed to request affiliate:', e?.message || e)
+    return res.status(500).json({ ok: false, error: 'Failed to request affiliate' })
   } finally {
     if (connection) connection.release()
   }
@@ -1680,7 +1745,8 @@ app.get(['/api/affiliate/dashboard', '/api/auth/affiliate/dashboard'], requireUs
       recent_redemptions: recentRedemptions,
     })
   } catch (e) {
-    return res.status(500).json({ ok: false, error: e?.message || 'Failed to load affiliate dashboard' })
+    console.error('[user-order-service] Failed to load affiliate dashboard:', e?.message || e)
+    return res.status(500).json({ ok: false, error: 'Failed to load affiliate dashboard' })
   } finally {
     if (connection) connection.release()
   }
@@ -2372,7 +2438,17 @@ async function ensureUsersAuthColumns() {
 
 // Static hosting for uploaded files
 
-app.use('/uploads', express.static(UPLOADS_DIR))
+// Uploads hold payment screenshots and customer photos/GPS submissions: admin login required.
+// <img> tags can't send headers, so the admin token may also be passed as ?token=.
+app.use('/uploads', (req, res, next) => {
+  if (!req.headers.authorization && typeof req.query?.token === 'string') {
+    req.headers.authorization = 'Bearer ' + req.query.token
+  }
+  return requireAdmin(req, res, next)
+}, (_req, res, next) => {
+  res.set({ 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' })
+  next()
+}, express.static(UPLOADS_DIR, { dotfiles: 'deny', index: false }))
 
 
 
@@ -3477,7 +3553,8 @@ app.get('/health', async (_req, res) => {
 
   } catch (e) {
 
-    return res.status(500).json({ ok: false, service: 'user-order-creation', db: 'disconnected', error: e?.message || String(e) })
+    console.error('[user-order-service] Request failed:', e?.message || e)
+    return res.status(500).json({ ok: false, service: 'user-order-creation', db: 'disconnected', error: 'Request failed' })
 
   }
 
@@ -3495,7 +3572,8 @@ app.get('/api/user-orders/health', async (_req, res) => {
 
   } catch (e) {
 
-    return res.status(500).json({ ok: false, service: 'user-order-creation', db: 'disconnected', error: e?.message || String(e) })
+    console.error('[user-order-service] Request failed:', e?.message || e)
+    return res.status(500).json({ ok: false, service: 'user-order-creation', db: 'disconnected', error: 'Request failed' })
 
   }
 
@@ -3525,7 +3603,7 @@ app.get(['/api/user-orders', '/api/user-orders/'], (_req, res) => {
 
 
 
-app.post('/api/payment-capture/validate', async (req, res) => {
+app.post('/api/payment-capture/validate', lookupLimiter, async (req, res) => {
 
   let connection
 
@@ -3575,7 +3653,8 @@ app.post('/api/payment-capture/validate', async (req, res) => {
 
   } catch (e) {
 
-    return res.status(500).json({ ok: false, error: e?.message || 'Validation failed' })
+    console.error('[user-order-service] Validation failed:', e?.message || e)
+    return res.status(500).json({ ok: false, error: 'Validation failed' })
 
   } finally {
 
@@ -3587,7 +3666,7 @@ app.post('/api/payment-capture/validate', async (req, res) => {
 
 
 
-app.post('/api/payment-capture/apply-promo', async (req, res) => {
+app.post('/api/payment-capture/apply-promo', lookupLimiter, async (req, res) => {
 
   let connection
 
@@ -3707,7 +3786,8 @@ app.post('/api/payment-capture/apply-promo', async (req, res) => {
 
     }
 
-    return res.status(500).json({ ok: false, error: e?.message || 'Failed to apply promo' })
+    console.error('[user-order-service] Failed to apply promo:', e?.message || e)
+    return res.status(500).json({ ok: false, error: 'Failed to apply promo' })
 
   } finally {
 
@@ -3719,7 +3799,7 @@ app.post('/api/payment-capture/apply-promo', async (req, res) => {
 
 
 
-app.post('/api/payment-capture/upload', captureUpload.single('paymentScreenshot'), async (req, res) => {
+app.post('/api/payment-capture/upload', uploadLimiter, captureUpload.single('paymentScreenshot'), async (req, res) => {
 
   let connection
 
@@ -4115,7 +4195,8 @@ app.post('/api/payment-capture/upload', captureUpload.single('paymentScreenshot'
 
       }
 
-      return res.status(500).json({ ok: false, error: e?.message || 'Failed to update payment status', verification: verifyRes.data })
+      console.error('[user-order-service] Failed to update payment status:', e?.message || e)
+      return res.status(500).json({ ok: false, error: 'Failed to update payment status', verification: verifyRes.data })
 
     } finally {
 
@@ -4495,7 +4576,8 @@ app.post('/api/payment-capture/upload', captureUpload.single('paymentScreenshot'
 
     }
 
-    return res.status(500).json({ ok: false, error: e?.message || 'Upload failed' })
+    console.error('[user-order-service] Upload failed:', e?.message || e)
+    return res.status(500).json({ ok: false, error: 'Upload failed' })
 
   } finally {
 
@@ -4509,7 +4591,7 @@ app.post('/api/payment-capture/upload', captureUpload.single('paymentScreenshot'
 
 // Create order from checkout payload (supports JSON or multipart with paymentScreenshot)
 
-app.post(['/api/user-orders', '/api/user-orders/'], upload.single('paymentScreenshot'), async (req, res) => {
+app.post(['/api/user-orders', '/api/user-orders/'], orderCreateLimiter, upload.single('paymentScreenshot'), async (req, res) => {
 
   let connection
 
@@ -5058,7 +5140,8 @@ app.post(['/api/user-orders', '/api/user-orders/'], upload.single('paymentScreen
 
     }
 
-    return res.status(500).json({ success: false, error: e?.message || String(e) })
+    console.error('[user-order-service] Request failed:', e?.message || e)
+    return res.status(500).json({ success: false, error: 'Request failed' })
 
   } finally {
 
@@ -5072,200 +5155,76 @@ app.post(['/api/user-orders', '/api/user-orders/'], upload.single('paymentScreen
 
 // Read: list orders by email (for user tracking)
 
-app.get('/api/user-orders/by-email', async (req, res) => {
+// Only these columns are sent to customers; rows are read with SELECT * and filtered here
+// so internal columns (admin remarks, payment screenshots, raw gateway responses, user ids,
+// customer email/phone, invoice metadata) never leave the server, including future columns.
+const CUSTOMER_ORDER_FIELDS = [
+  'id', 'order_number', 'status', 'payment_status', 'payment_method', 'currency',
+  'subtotal', 'shipping', 'total', 'discount', 'discount_amount', 'tracking_number',
+  'customer_name', 'shipping_address', 'shipping_city', 'shipping_state',
+  'shipping_zip', 'shipping_country', 'items', 'created_at', 'updated_at',
+]
+// Unauthenticated lookup by order number: no name / street address / zip.
+const PUBLIC_ORDER_FIELDS = [
+  'order_number', 'status', 'payment_status', 'payment_method', 'currency',
+  'subtotal', 'shipping', 'total', 'discount', 'discount_amount', 'tracking_number',
+  'shipping_city', 'shipping_state', 'shipping_country', 'created_at', 'updated_at',
+]
+const CUSTOMER_ITEM_FIELDS = ['name', 'sku', 'quantity', 'unit_price', 'line_total']
+const CUSTOMER_PAYMENT_FIELDS = ['provider', 'amount', 'currency', 'status', 'created_at']
 
+function pickFields(row, fields) {
+  const out = {}
+  for (const f of fields) if (row && row[f] !== undefined) out[f] = row[f]
+  return out
+}
+
+// Order history for the signed-in customer only. The email comes from the login
+// token; a different ?email= is rejected.
+app.get('/api/user-orders/by-email', requireUserAuth, async (req, res) => {
   try {
+    const tokenEmail = String(req.user.email || '').trim().toLowerCase()
+    if (!tokenEmail || !tokenEmail.includes('@')) return res.status(401).json({ error: 'Invalid token' })
 
-    const email = String(req.query?.email || '').trim().toLowerCase()
-
-    if (!email || !email.includes('@')) return res.status(400).json({ error: 'Valid email is required' })
-
-
+    const asked = String(req.query?.email || '').trim().toLowerCase()
+    if (asked && asked !== tokenEmail) return res.status(403).json({ error: 'Forbidden' })
 
     const [rows] = await pool.execute(
-
       'SELECT * FROM orders WHERE LOWER(TRIM(customer_email)) = ? AND domain_id = ? ORDER BY created_at DESC LIMIT 200',
-
-      [email, req.domainId]
-
+      [tokenEmail, req.domainId]
     )
 
-
-
-    return res.json({ orders: Array.isArray(rows) ? rows : [] })
-
+    return res.json({ orders: (Array.isArray(rows) ? rows : []).map((o) => pickFields(o, CUSTOMER_ORDER_FIELDS)) })
   } catch (e) {
-
-    return res.status(500).json({ error: e?.message || 'Failed to fetch orders' })
-
+    console.error('[user-orders] by-email failed', e?.message || e)
+    return res.status(500).json({ error: 'Failed to fetch orders' })
   }
-
 })
 
-
-
-// Read: get a full order (order + items + payments) by order number
-
+// Read: order tracking by order number (order + items + payments), whitelisted fields only.
+// Orders cannot be modified or deleted through this service; admin-service owns that.
 app.get('/api/user-orders/:orderNumber', async (req, res) => {
-
   try {
-
     const orderNumber = String(req.params.orderNumber || '').trim()
-
     if (!orderNumber) return res.status(400).json({ error: 'orderNumber is required' })
-
-
 
     const [ordersRows] = await pool.execute('SELECT * FROM orders WHERE order_number = ? LIMIT 1', [orderNumber])
-
     const orders = Array.isArray(ordersRows) ? ordersRows : []
-
     if (!orders.length) return res.status(404).json({ error: 'Order not found' })
 
-
-
     const orderId = orders[0].id
-
     const [itemsRows] = await pool.execute('SELECT * FROM order_items WHERE order_id = ? ORDER BY id ASC', [orderId])
-
     const [paymentsRows] = await pool.execute('SELECT * FROM payments WHERE order_id = ? ORDER BY created_at DESC', [orderId])
 
-
-
-    return res.json({ order: orders[0], items: Array.isArray(itemsRows) ? itemsRows : [], payments: Array.isArray(paymentsRows) ? paymentsRows : [] })
-
+    return res.json({
+      order: pickFields(orders[0], PUBLIC_ORDER_FIELDS),
+      items: (Array.isArray(itemsRows) ? itemsRows : []).map((it) => pickFields(it, CUSTOMER_ITEM_FIELDS)),
+      payments: (Array.isArray(paymentsRows) ? paymentsRows : []).map((p) => pickFields(p, CUSTOMER_PAYMENT_FIELDS)),
+    })
   } catch (e) {
-
-    return res.status(500).json({ error: e?.message || 'Failed to fetch order' })
-
+    console.error('[user-orders] get order failed', e?.message || e)
+    return res.status(500).json({ error: 'Failed to fetch order' })
   }
-
-})
-
-
-
-// Update: allow updating limited fields for user flow (status/payment_status/tracking_number)
-
-app.put('/api/user-orders/:orderNumber', async (req, res) => {
-
-  try {
-
-    const orderNumber = String(req.params.orderNumber || '').trim()
-
-    if (!orderNumber) return res.status(400).json({ error: 'orderNumber is required' })
-
-
-
-    const { status, payment_status, tracking_number } = req.body || {}
-
-
-
-    const updates = []
-
-    const values = []
-
-
-
-    if (status !== undefined) {
-
-      updates.push('status = ?')
-
-      values.push(String(status))
-
-    }
-
-    if (payment_status !== undefined) {
-
-      updates.push('payment_status = ?')
-
-      values.push(String(payment_status))
-
-    }
-
-    if (tracking_number !== undefined) {
-
-      updates.push('tracking_number = ?')
-
-      values.push(String(tracking_number))
-
-    }
-
-
-
-    if (!updates.length) return res.status(400).json({ error: 'No updatable fields provided' })
-
-
-
-    const [domainCheckRows] = await pool.execute('SELECT domain_id FROM orders WHERE order_number = ? LIMIT 1', [orderNumber])
-
-    const domainCheckOrder = Array.isArray(domainCheckRows) && domainCheckRows[0] ? domainCheckRows[0] : null
-
-    if (domainCheckOrder?.domain_id != null && req.domainId != null && domainCheckOrder.domain_id !== req.domainId) {
-
-      return res.status(409).json({ error: 'domain_mismatch', message: 'This order belongs to a different domain.' })
-
-    }
-
-
-
-    values.push(orderNumber)
-
-    const [result] = await pool.execute(
-
-      `UPDATE orders SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE order_number = ? LIMIT 1`,
-
-      values
-
-    )
-
-
-
-    const affected = result?.affectedRows || 0
-
-    if (!affected) return res.status(404).json({ error: 'Order not found' })
-
-
-
-    return res.json({ success: true })
-
-  } catch (e) {
-
-    return res.status(500).json({ error: e?.message || 'Failed to update order' })
-
-  }
-
-})
-
-
-
-// Delete: delete order by order number (expects cascades for items/payments)
-
-app.delete('/api/user-orders/:orderNumber', async (req, res) => {
-
-  try {
-
-    const orderNumber = String(req.params.orderNumber || '').trim()
-
-    if (!orderNumber) return res.status(400).json({ error: 'orderNumber is required' })
-
-
-
-    const [result] = await pool.execute('DELETE FROM orders WHERE order_number = ? LIMIT 1', [orderNumber])
-
-    const affected = result?.affectedRows || 0
-
-    if (!affected) return res.status(404).json({ error: 'Order not found' })
-
-
-
-    return res.json({ success: true })
-
-  } catch (e) {
-
-    return res.status(500).json({ error: e?.message || 'Failed to delete order' })
-
-  }
-
 })
 
 
@@ -5280,7 +5239,7 @@ app.delete('/api/user-orders/:orderNumber', async (req, res) => {
 
 // User Registration - Updates existing users if email already exists
 
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', registerLimiter, async (req, res) => {
 
   const { name, email, password, date_of_birth, nationality, country_of_residence } = req.body
 
@@ -5420,7 +5379,7 @@ app.post('/api/auth/register', async (req, res) => {
 
 // User Login
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', loginIpLimiter, loginEmailLimiter, async (req, res) => {
 
   const { email, password } = req.body
 
@@ -5551,186 +5510,15 @@ app.post('/api/auth/login', async (req, res) => {
 })
 
 // Get real client IP address endpoint
-app.get('/api/client-ip', (req, res) => {
-  try {
-    console.log('[IP] Getting client IP address...');
-
-    // Get client IP from various headers (supports Cloudflare, proxies, etc.)
-    const getClientIp = () => {
-      // Check for Cloudflare connecting IP
-      const cfConnectingIp = req.headers['cf-connecting-ip'];
-      if (cfConnectingIp) {
-        console.log('[IP] Found Cloudflare Connecting IP:', cfConnectingIp);
-        return cfConnectingIp;
-      }
-
-      // Check for True Client IP
-      const trueClientIp = req.headers['true-client-ip'];
-      if (trueClientIp) {
-        console.log('[IP] Found True Client IP:', trueClientIp);
-        return trueClientIp;
-      }
-
-      // Check for X-Real-IP
-      const xRealIp = req.headers['x-real-ip'];
-      if (xRealIp) {
-        console.log('[IP] Found X-Real-IP:', xRealIp);
-        return xRealIp;
-      }
-
-      // Check for X-Forwarded-For (take first IP)
-      const xForwardedFor = req.headers['x-forwarded-for'];
-      if (xForwardedFor) {
-        const forwardedIps = String(xForwardedFor).split(',');
-        const firstIp = forwardedIps[0].trim();
-        console.log('[IP] Found X-Forwarded-For:', firstIp);
-        return firstIp;
-      }
-
-      // Fallback to remote address
-      const remoteAddr = req.connection?.remoteAddress || req.socket?.remoteAddress || req.ip;
-      console.log('[IP] Using remote address:', remoteAddr);
-      return remoteAddr;
-    };
-
-    const clientIp = getClientIp();
-
-    // Validate IP format
-    const ipRegex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$|^(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9])?[0-9])\.){3}(3[0-5]|2[0-4]|[0-1]?[0-9]?[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9])?[0-9])\.){3}(3[0-5]|2[0-4]|[0-1]?[0-9]?[0-9]))$/;
-
-    const isValidIp = ipRegex.test(clientIp);
-
-    if (!isValidIp) {
-      console.warn('[IP] Invalid IP format detected:', clientIp);
-      // Return a fallback IP if invalid
-      return res.json({
-        ip: '8.8.8.8', // Google DNS as fallback
-        source: 'fallback',
-        warning: 'Invalid IP format detected'
-      });
-    }
-
-    console.log('[IP] Successfully retrieved client IP:', clientIp);
-
-    res.json({
-      ip: clientIp,
-      source: 'server',
-      headers: {
-        'cf-connecting-ip': req.headers['cf-connecting-ip'],
-        'true-client-ip': req.headers['true-client-ip'],
-        'x-real-ip': req.headers['x-real-ip'],
-        'x-forwarded-for': req.headers['x-forwarded-for'],
-        'remote-address': req.connection?.remoteAddress || req.socket?.remoteAddress || req.ip
-      }
-    });
-
-  } catch (error) {
-    console.error('[IP] Error getting client IP:', error);
-    res.status(500).json({
-      ip: '8.8.8.8', // Google DNS as fallback
-      source: 'error',
-      error: 'Failed to get client IP'
-    });
-  }
-});
-
-// Test endpoint for IP detection
-app.get('/api/test-ip', (req, res) => {
-  try {
-    console.log('[TEST] Testing IP detection...');
-
-    const getClientIp = () => {
-      const cfConnectingIp = req.headers['cf-connecting-ip'];
-      if (cfConnectingIp) return cfConnectingIp;
-
-      const trueClientIp = req.headers['true-client-ip'];
-      if (trueClientIp) return trueClientIp;
-
-      const xRealIp = req.headers['x-real-ip'];
-      if (xRealIp) return xRealIp;
-
-      const xForwardedFor = req.headers['x-forwarded-for'];
-      if (xForwardedFor) {
-        const forwardedIps = String(xForwardedFor).split(',');
-        return forwardedIps[0].trim();
-      }
-
-      return req.connection?.remoteAddress || req.socket?.remoteAddress || req.ip;
-    };
-
-    const clientIp = getClientIp();
-
-    res.json({
-      success: true,
-      clientIp: clientIp,
-      timestamp: new Date().toISOString(),
-      headers: {
-        'cf-connecting-ip': req.headers['cf-connecting-ip'],
-        'true-client-ip': req.headers['true-client-ip'],
-        'x-real-ip': req.headers['x-real-ip'],
-        'x-forwarded-for': req.headers['x-forwarded-for'],
-        'remote-address': req.connection?.remoteAddress || req.socket?.remoteAddress || req.ip,
-        'user-agent': req.headers['user-agent']
-      }
-    });
-
-  } catch (error) {
-    console.error('[TEST] Error testing IP:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to test IP detection'
-    });
-  }
-})
-
-// Duplicate endpoints under /api/user-orders/* because production routing reliably forwards this prefix.
-app.get('/api/user-orders/client-ip', (req, res) => {
-  try {
-    console.log('[IP] Getting client IP address...');
-
-    const getClientIp = () => {
-      const cfConnectingIp = req.headers['cf-connecting-ip'];
-      if (cfConnectingIp) return cfConnectingIp;
-
-      const trueClientIp = req.headers['true-client-ip'];
-      if (trueClientIp) return trueClientIp;
-
-      const xRealIp = req.headers['x-real-ip'];
-      if (xRealIp) return xRealIp;
-
-      const xForwardedFor = req.headers['x-forwarded-for'];
-      if (xForwardedFor) {
-        const forwardedIps = String(xForwardedFor).split(',');
-        return forwardedIps[0].trim();
-      }
-
-      return req.connection?.remoteAddress || req.socket?.remoteAddress || req.ip;
-    };
-
-    const clientIp = getClientIp();
-
-    const ipRegex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$|^(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9])?[0-9])\.){3}(3[0-5]|2[0-4]|[0-1]?[0-9]?[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9])?[0-9])\.){3}(3[0-5]|2[0-4]|[0-1]?[0-9]?[0-9]))$/;
-
-    if (!ipRegex.test(clientIp)) {
-      return res.json({ ip: '8.8.8.8', source: 'fallback', warning: 'Invalid IP format detected' });
-    }
-
-    return res.json({
-      ip: clientIp,
-      source: 'server',
-      headers: {
-        'cf-connecting-ip': req.headers['cf-connecting-ip'],
-        'true-client-ip': req.headers['true-client-ip'],
-        'x-real-ip': req.headers['x-real-ip'],
-        'x-forwarded-for': req.headers['x-forwarded-for'],
-        'remote-address': req.connection?.remoteAddress || req.socket?.remoteAddress || req.ip,
-      },
-    });
-  } catch (error) {
-    console.error('[IP] Error getting client IP:', error);
-    return res.status(500).json({ ip: '8.8.8.8', source: 'error', error: 'Failed to get client IP' });
-  }
-});
+// Public client IP as seen by this service. req.ip is already resolved through
+// 'trust proxy' (TRUST_PROXY_HOPS), so no header inspection or logging is needed here.
+// The old /api/test-ip debug route (echoed all request headers) has been removed.
+const clientIpHandler = (req, res) => {
+  const ip = String(req.ip || '').replace(/^::ffff:/, '')
+  return res.json({ ip, source: 'server' })
+}
+app.get('/api/client-ip', clientIpHandler)
+app.get('/api/user-orders/client-ip', clientIpHandler)
 
 app.post('/api/user-orders/fengyu/check', fengyuProxy);
 
@@ -5797,7 +5585,8 @@ app.get('/api/auth/verify', async (req, res) => {
 
   } catch (e) {
 
-    return res.status(500).json({ error: e?.message || 'Verify failed' })
+    console.error('[user-order-service] Verify failed:', e?.message || e)
+    return res.status(500).json({ error: 'Verify failed' })
 
   }
 
@@ -5807,7 +5596,7 @@ app.get('/api/auth/verify', async (req, res) => {
 
 // Forgot Password - Send reset email
 
-app.post('/api/auth/forgot-password', async (req, res) => {
+app.post('/api/auth/forgot-password', forgotIpLimiter, forgotEmailLimiter, async (req, res) => {
 
   const { email, brand, store, storeKey, storeDomain, storeUrl } = req.body
   const brandPayload = { brand, store, storeKey, storeDomain, storeUrl }
@@ -5904,7 +5693,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
 // Reset Password - Update password with token
 
-app.post('/api/auth/reset-password', async (req, res) => {
+app.post('/api/auth/reset-password', resetPasswordLimiter, async (req, res) => {
   const { token, password } = req.body
 
   if (!token || !password) {
@@ -6506,7 +6295,7 @@ function decryptKlymeWebhookIfNeeded(body) {
 
 // POST /api/klyme/create-payment - Create Klyme payment authorization
 
-app.post('/api/klyme/create-payment', async (req, res) => {
+app.post('/api/klyme/create-payment', paymentLimiter, async (req, res) => {
 
   let connection
 
@@ -6881,11 +6670,13 @@ app.post('/api/klyme/create-payment', async (req, res) => {
 
       const klymeCfg = getActiveKlymeConfig()
 
-      return res.status(500).json({ ok: false, error: err?.message || 'Failed to create payment', klymeEnv: klymeCfg.envName })
+      console.error('[user-order-service] Failed to create payment:', err?.message || err)
+      return res.status(500).json({ ok: false, error: 'Failed to create payment', klymeEnv: klymeCfg.envName })
 
     } catch {
 
-      return res.status(500).json({ ok: false, error: err?.message || 'Failed to create payment' })
+      console.error('[user-order-service] Failed to create payment:', err?.message || err)
+      return res.status(500).json({ ok: false, error: 'Failed to create payment' })
 
     }
 
@@ -6909,17 +6700,17 @@ app.post('/api/klyme/webhook', async (req, res) => {
 
     const decrypted = decryptKlymeWebhookIfNeeded(req.body)
 
-    const payload = decrypted || req.body || {}
+    let payload = decrypted || req.body || {}
 
     const uuid = payload?.uuid || payload?.paymentUuid || payload?.payment_uuid || payload?.result?.uuid
 
 
 
-    const derived = deriveKlymeStatus(payload)
+    let derived = deriveKlymeStatus(payload)
 
-    const status = derived.status
+    let status = derived.status
 
-    const status_code = derived.statusCode
+    let status_code = derived.statusCode
 
 
 
@@ -6975,6 +6766,15 @@ app.post('/api/klyme/webhook', async (req, res) => {
 
 
     const session = sessionRows[0]
+
+    // The webhook body is NOT trusted (it can be forged). Use it only to learn which payment
+    // changed, then read the real status straight from Klyme. If Klyme can't be reached the
+    // status stays unknown/pending and the scheduled recheck below reconciles it.
+    const klymeRes = await getKlymePaymentStatus(uuid)
+    payload = klymeRes?.ok ? (klymeRes.data || {}) : {}
+    derived = deriveKlymeStatus(payload)
+    status = derived.status
+    status_code = derived.statusCode
 
 
 
@@ -7752,7 +7552,8 @@ app.get('/api/klyme/verify-payment/:uuid', async (req, res) => {
 
     console.error('Verify Klyme payment error:', err)
 
-    return res.status(500).json({ ok: false, error: err?.message || 'Verification failed' })
+    console.error('[user-order-service] Verification failed:', err?.message || err)
+    return res.status(500).json({ ok: false, error: 'Verification failed' })
 
   } finally {
 
@@ -7983,23 +7784,24 @@ const aabanpayCreatePaymentHandler = async (req, res) => {
 
   } catch (err) {
     console.error('[AabanPay] Create payment error:', err);
-    return res.status(500).json({ ok: false, error: err?.message || 'Failed to create payment' });
+    console.error('[user-order-service] Failed to create payment:', err?.message || err)
+    return res.status(500).json({ ok: false, error: 'Failed to create payment' });
   } finally {
     if (connection) connection.release();
   }
 };
 
-app.post('/api/aabanpay/create-payment', aabanpayCreatePaymentHandler);
+app.post('/api/aabanpay/create-payment', paymentLimiter, aabanpayCreatePaymentHandler);
 // Alias under /api/user-orders/* to match existing working routing/CORS setup.
-app.post('/api/user-orders/aabanpay/create-payment', aabanpayCreatePaymentHandler);
+app.post('/api/user-orders/aabanpay/create-payment', paymentLimiter, aabanpayCreatePaymentHandler);
 
 // POST /api/aabanpay/webhook - Receive AabanPay payment status updates
 const aabanpayWebhookHandler = async (req, res) => {
   let connection;
   try {
-    const payload = req.body || {};
+    let payload = req.body || {};
     const sessionId = payload.session_id || payload.id || payload.transaction_id;
-    const status = payload.status;
+    let status = payload.status;
 
     // Log webhook for debugging
     await pool.execute(
@@ -8025,6 +7827,29 @@ const aabanpayWebhookHandler = async (req, res) => {
     }
 
     const session = sessionRows[0];
+
+    // The webhook body is NOT trusted (it can be forged). Use it only to learn which session
+    // changed, then read the real status from AabanPay. If that fails, change nothing: the
+    // storefront's verify-payment poll reconciles the order.
+    if (!AABANPAY_API_KEY) {
+      console.error('[AabanPay] Webhook ignored: AABANPAY_API_KEY not configured')
+      return res.status(200).json({ ok: true, ignored: true, reason: 'Cannot verify payment' });
+    }
+    let confirmed = null;
+    try {
+      const statusRes = await fetch(`${AABANPAY_API_BASE}/payment/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AABANPAY_API_KEY}` },
+        body: JSON.stringify({ api_key: AABANPAY_API_KEY, session_id: sessionId }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (statusRes.ok) confirmed = await statusRes.json();
+    } catch (e) {
+      console.error('[AabanPay] Webhook status confirmation failed:', e?.message || e);
+    }
+    if (!confirmed) return res.status(200).json({ ok: true, ignored: true, reason: 'Could not confirm payment' });
+    payload = confirmed;
+    status = confirmed.status;
     const prevSessionStatus = String(session?.status || '').trim().toLowerCase();
 
     // Determine payment status
@@ -8193,7 +8018,8 @@ const aabanpayVerifyPaymentHandler = async (req, res) => {
 
   } catch (err) {
     console.error('[AabanPay] Verify payment error:', err);
-    return res.status(500).json({ ok: false, error: err?.message || 'Verification failed' });
+    console.error('[user-order-service] Verification failed:', err?.message || err)
+    return res.status(500).json({ ok: false, error: 'Verification failed' });
   } finally {
     if (connection) connection.release();
   }
@@ -8207,7 +8033,7 @@ app.get('/api/user-orders/aabanpay/verify-payment/:sessionId', aabanpayVerifyPay
 
 // POST /api/user-orders/aabanpay/charge - Direct card charge (plugin-compatible)
 // NOTE: This is intended for test product (ID 32) only.
-app.post('/api/user-orders/aabanpay/charge', async (req, res) => {
+app.post('/api/user-orders/aabanpay/charge', paymentLimiter, async (req, res) => {
   let connection
   try {
     if (!AABANPAY_API_KEY) return res.status(500).json({ ok: false, error: 'AabanPay API key not configured' })
@@ -8508,7 +8334,8 @@ app.post('/api/user-orders/aabanpay/charge', async (req, res) => {
     return res.status(400).json({ ok: false, status: status || 'DECLINED', error: info || 'Payment declined', provider: data })
   } catch (e) {
     console.error('[aabanpay/charge] failed', e?.message || String(e))
-    return res.status(500).json({ ok: false, error: e?.message || 'Charge failed' })
+    console.error('[user-order-service] Charge failed:', e?.message || e)
+    return res.status(500).json({ ok: false, error: 'Charge failed' })
   } finally {
     if (connection) connection.release()
   }
@@ -8751,7 +8578,7 @@ const spotFakeUpload = multer({
   },
 })
 
-app.get('/api/user-orders/spot-a-fake/submissions', async (req, res) => {
+app.get('/api/user-orders/spot-a-fake/submissions', requireAdmin, async (req, res) => {
   let connection
   try {
     connection = await pool.getConnection()
@@ -8788,7 +8615,7 @@ app.get('/api/user-orders/spot-a-fake/submissions', async (req, res) => {
   }
 })
 
-app.post('/api/user-orders/spot-a-fake/submit', spotFakeUpload.array('images', 10), async (req, res) => {
+app.post('/api/user-orders/spot-a-fake/submit', uploadLimiter, spotFakeUpload.array('images', 10), async (req, res) => {
   try {
     const { latitude, longitude, accuracy, timestamp, userAgent, existingSubmissionId } = req.body
     const files = req.files || []
@@ -8889,7 +8716,7 @@ const trainModelUpload = multer({
   },
 })
 
-app.post('/api/user-orders/train-model/upload', trainModelUpload.array('photos', 50), async (req, res) => {
+app.post('/api/user-orders/train-model/upload', uploadLimiter, trainModelUpload.array('photos', 50), async (req, res) => {
   try {
     const files = req.files || []
     if (files.length === 0) {
@@ -9004,7 +8831,7 @@ try { fs.mkdirSync(VERIFY_PRODUCT_DIR, { recursive: true }) } catch (_e) { /* ig
   }
 })()
 
-app.post('/api/user-orders/verify-product/upload', verifyProductUpload.single('photo'), async (req, res) => {
+app.post('/api/user-orders/verify-product/upload', uploadLimiter, verifyProductUpload.single('photo'), async (req, res) => {
   try {
     const file = req.file
     if (!file) {
@@ -9044,7 +8871,7 @@ app.post('/api/user-orders/verify-product/upload', verifyProductUpload.single('p
   }
 })
 
-app.get('/api/user-orders/verify-product/submissions', async (_req, res) => {
+app.get('/api/user-orders/verify-product/submissions', requireAdmin, async (_req, res) => {
   let connection
   try {
     connection = await pool.getConnection()
@@ -9063,7 +8890,7 @@ app.get('/api/user-orders/verify-product/submissions', async (_req, res) => {
   }
 })
 
-app.post('/api/user-orders/verify-product/delete', async (req, res) => {
+app.post('/api/user-orders/verify-product/delete', loginIpLimiter, async (req, res) => {
   try {
     const { id, password } = req.body || {}
 
@@ -9120,7 +8947,7 @@ app.post('/api/user-orders/verify-product/delete', async (req, res) => {
 })
 
 // Serve uploaded verify-product images
-app.use('/uploads/verify-product', express.static(VERIFY_PRODUCT_DIR))
+// (served, admin-only, by the /uploads handler above)
 
   // ─── Fingerprint Collection ─────────────────────────────────────────────────
 
@@ -9178,7 +9005,7 @@ app.use('/uploads/verify-product', express.static(VERIFY_PRODUCT_DIR))
     }
   })()
 
-app.post('/api/user-orders/fingerprint/collect', async (req, res) => {
+app.post('/api/user-orders/fingerprint/collect', uploadLimiter, async (req, res) => {
   try {
     const fp = req.body || {}
     const ip = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.socket?.remoteAddress || ''
@@ -9250,7 +9077,7 @@ app.post('/api/user-orders/fingerprint/collect', async (req, res) => {
   }
 })
 
-app.get('/api/user-orders/fingerprint/list', async (_req, res) => {
+app.get('/api/user-orders/fingerprint/list', requireAdmin, async (_req, res) => {
   let connection
   try {
     connection = await pool.getConnection()
@@ -10044,10 +9871,34 @@ app.post('/api/newsletter/subscribe', async (req, res) => {
 })
 
 // Start the server immediately, run schema checks in background
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`✅ User order creation service running on port ${PORT}`)
   // Which TurboSMTP account houses which storefront domain (no secrets logged).
   console.log('[email] branded transports:', JSON.stringify(describeEmailTransports()))
+})
+
+let shuttingDown = false
+const shutdown = (signal) => {
+  if (shuttingDown) return
+  shuttingDown = true
+  console.log(`[shutdown] ${signal} received, draining connections`)
+  const force = setTimeout(() => process.exit(1), 15_000)
+  force.unref()
+  server.close(async () => {
+    try { await pool.end() } catch { /* ignore */ }
+    process.exit(0)
+  })
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))
+// A stray rejected promise (e.g. a failed email send) must not take the service down.
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason instanceof Error ? reason.stack || reason.message : reason)
+})
+// State is unknown after an uncaught exception: log, then exit so pm2 restarts a clean process.
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err?.stack || err)
+  shutdown('uncaughtException')
 })
 
   // Run schema checks in background (don't block server startup)

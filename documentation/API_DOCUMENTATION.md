@@ -498,58 +498,40 @@ Notes on field aliasing (the code accepts either name):
 
 ### GET `/api/user-orders/by-email`
 
-**Query params:** `email` (required)
+**Auth:** `Authorization: Bearer <login token>` (required). Returns the signed-in customer's own orders on the current storefront domain; the email is taken from the token.
+
+**Query params:** `email` (optional) — if present it must match the token's email.
 
 **Response `200`:**
 ```json
-{ "orders": [ "full orders table rows, newest first, max 200 - see the orders table shape section below" ] }
+{ "orders": [ { "id": 1, "order_number": "...", "status": "...", "payment_status": "...", "payment_method": "...", "currency": "GBP", "subtotal": 0, "shipping": 0, "total": 0, "discount": 0, "discount_amount": 0, "tracking_number": null, "customer_name": "...", "shipping_address": "...", "shipping_city": "...", "shipping_state": "...", "shipping_zip": "...", "shipping_country": "...", "items": null, "created_at": "...", "updated_at": "..." } ] }
 ```
+Only the columns above are returned (newest first, max 200). Internal columns (email, phone, admin remarks, payment screenshots, raw gateway data, user ids) are never sent.
 
-**Errors:** `400` `{ "error": "Valid email is required" }` · `500` on failure
+**Errors:** `401` `{ "error": "Missing token" }` / `{ "error": "Invalid token" }` · `403` `{ "error": "Forbidden" }` if `email` differs from the token's email · `500` `{ "error": "Failed to fetch orders" }`
 
 ---
 
 ### GET `/api/user-orders/:orderNumber`
 
+Public order tracking (no auth). The order number is the only credential, so the response is a reduced public view with no name, street address or postcode.
+
 **Response `200`:**
 ```json
 {
-  "order": { "...": "full orders row" },
-  "items": [ "...full order_items rows" ],
-  "payments": [ "...full payments rows" ]
+  "order": { "order_number": "...", "status": "...", "payment_status": "...", "payment_method": "...", "currency": "GBP", "subtotal": 0, "shipping": 0, "total": 0, "discount": 0, "discount_amount": 0, "tracking_number": null, "shipping_city": "...", "shipping_state": "...", "shipping_country": "...", "created_at": "...", "updated_at": "..." },
+  "items": [ { "name": "...", "sku": "...", "quantity": 1, "unit_price": 0, "line_total": 0 } ],
+  "payments": [ { "provider": "...", "amount": 0, "currency": "GBP", "status": "...", "created_at": "..." } ]
 }
 ```
 
-**Errors:** `400` missing order number (won't normally trigger via the URL param) · `404` `{ "error": "Order not found" }` · `500` on failure
-
-*(Verified live: unknown order number -> `404 {"error":"Order not found"}`.)*
+**Errors:** `400` missing order number (won't normally trigger via the URL param) · `404` `{ "error": "Order not found" }` · `500` `{ "error": "Failed to fetch order" }`
 
 ---
 
-### PUT `/api/user-orders/:orderNumber`
+### ~~PUT / DELETE `/api/user-orders/:orderNumber`~~ — removed
 
-Limited field update — only `status`, `payment_status`, `tracking_number` can be set (whichever keys are present in the body are updated; omitted keys are left alone).
-
-**Request:**
-```json
-{
-  "status": "processing",
-  "payment_status": "received",
-  "tracking_number": "TRK123456"
-}
-```
-
-**Response `200`:** `{ "success": true }`
-
-**Errors:** `400` `{ "error": "No updatable fields provided" }` if body has none of the three fields · `404` `{ "error": "Order not found" }` · `500` on failure
-
----
-
-### DELETE `/api/user-orders/:orderNumber`
-
-**Response `200`:** `{ "success": true }`
-
-**Errors:** `404` `{ "error": "Order not found" }` · `500` on failure
+Orders cannot be modified or deleted through this service. Both routes now return Express's default `404`. Status, payment-status and tracking updates, and deletion, are admin-service's responsibility (`PUT /api/admin/order/:id/*`, `DELETE /api/admin/order/:id`).
 
 ---
 
@@ -1242,48 +1224,18 @@ Unsubscribed rows are kept (for audit) but hidden from the admin list and CSV ex
 
 ### GET `/api/client-ip` (+ `/api/user-orders/client-ip`, duplicate mount under the `/api/user-orders` prefix for routing/CORS reasons)
 
-Best-guess public client IP — trusts Cloudflare/proxy headers only when Cloudflare-specific headers are present.
+Public client IP as resolved by Express `trust proxy` (`TRUST_PROXY_HOPS` in `.env`). No request headers are echoed or logged.
 
 **Response `200`:**
 ```json
-{
-  "ip": "203.0.113.5",
-  "source": "server",
-  "headers": {
-    "cf-connecting-ip": null,
-    "true-client-ip": null,
-    "x-real-ip": null,
-    "x-forwarded-for": null,
-    "remote-address": "203.0.113.5"
-  }
-}
+{ "ip": "203.0.113.5", "source": "server" }
 ```
-If the detected IP fails basic format validation: `{ "ip": "8.8.8.8", "source": "fallback", "warning": "Invalid IP format detected" }`.
-
-**Errors:** `500` `{ "ip": "8.8.8.8", "source": "error", "error": "Failed to get client IP" }`
 
 ---
 
-### GET `/api/test-ip`
+### ~~GET `/api/test-ip`~~ — removed
 
-Debug variant of the above, echoing all relevant headers including `user-agent`.
-
-**Response `200`:**
-```json
-{
-  "success": true,
-  "clientIp": "203.0.113.5",
-  "timestamp": "2025-01-01T12:00:00.000Z",
-  "headers": {
-    "cf-connecting-ip": null,
-    "true-client-ip": null,
-    "x-real-ip": null,
-    "x-forwarded-for": null,
-    "remote-address": "203.0.113.5",
-    "user-agent": "Mozilla/5.0..."
-  }
-}
-```
+Debug route that echoed all request headers. Removed; returns Express's default `404`.
 
 ---
 
@@ -1325,9 +1277,9 @@ This service does not use one consistent success envelope. Quick reference:
 | `GET/POST/POST /api/affiliate/*` | `{ ok, ... }` |
 | `POST /api/products/klyme-status*` | `{ klyme_settings }` — object map, no `success`/`ok` |
 | `POST /api/user-orders` | `{ success, orderId, orderNumber, email_debug }` |
-| `GET /api/user-orders/by-email` | `{ orders }` |
-| `GET /api/user-orders/:orderNumber` | `{ order, items, payments }` |
-| `PUT`/`DELETE /api/user-orders/:orderNumber` | `{ success }` |
+| `GET /api/user-orders/by-email` | `{ orders }` — login required, whitelisted columns |
+| `GET /api/user-orders/:orderNumber` | `{ order, items, payments }` — whitelisted columns |
+| `PUT`/`DELETE /api/user-orders/:orderNumber` | removed (404) |
 | `POST /api/auth/register`, `/login` | `{ success, token, user }` |
 | `GET /api/auth/verify` | `{ success, user }` |
 | `POST /api/auth/forgot-password`, `/reset-password` | `{ success, message }` |
@@ -1336,8 +1288,8 @@ This service does not use one consistent success envelope. Quick reference:
 | `POST/GET /api/aabanpay/*` | `{ ok, ... }` |
 | `POST /api/user-orders/spot-a-fake/*`, `/train-model/*`, `/verify-product/*` | `{ success, ... }` or `{ message }` on error — no `ok` |
 | `POST /api/user-orders/fingerprint/collect` | `{ ok: true }` always |
-| `GET /api/user-orders/fingerprint/list`, `/verify-product/submissions`, `/spot-a-fake/submissions` | bare `{ fingerprints }` / `{ submissions }` — no `success`/`ok`, and the GET list endpoints return `200` with an empty array even on DB error |
+| `GET /api/user-orders/fingerprint/list`, `/verify-product/submissions`, `/spot-a-fake/submissions` | admin token required (`role: admin`); bare `{ fingerprints }` / `{ submissions }` — no `success`/`ok`, and the GET list endpoints return `200` with an empty array even on DB error |
 | `POST /api/ai-chat` | `{ reply, sources, provider }` — no `success`/`ok` |
 | `GET /api/ai-chat/suggestions` | `{ suggestions }` |
 | `POST /api/newsletter/subscribe` | `{ ok, ... }` |
-| `GET /api/client-ip`, `/api/test-ip` | `{ ip, ... }` / `{ success, clientIp, ... }` — inconsistent with each other |
+| `GET /api/client-ip` | `{ ip, source }` (`/api/test-ip` removed) |

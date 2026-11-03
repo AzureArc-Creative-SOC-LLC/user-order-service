@@ -2,18 +2,32 @@
   "info": {
     "name": "User Order Service API Tests",
     "_postman_id": "d4e5f6a7-b8c9-4012-def1-234567890abc",
-    "description": "Full API test suite for user-order-service (Postgres/Supabase clone of server/user-order-creation). Run with the matching environment file.\n\nIMPORTANT — this hits the REAL PRODUCTION SUPABASE DATABASE (same DB as admin-service/tracking-service/payment-verification-service). Requests in this collection are deliberately scoped to validation-error paths, 404s on obviously-fake IDs (e.g. 'THIS-ORDER-DOES-NOT-EXIST-XYZ'), and read-only lookups — nothing here creates a real user, order, or affiliate by default.\n\nA few endpoints unavoidably write a low-value log row even on 'empty' requests (fingerprint/collect). That's noted on the request itself.\n\nEXCEPTION — 'Auth — Requires Real Fixtures' contains a Register + Login happy-path pair that runs against ONE fixed fixture account (collection variables 'testEmail' / 'testPassword', defaulted to a dummy @user-order-service.test address). POST /api/auth/register upserts by email (see index.js), so re-running this is idempotent — it never creates a new row after the first run, it just updates the same one. The Login request stores the returned JWT into the 'authToken' collection variable, which is what lets the rest of the 'Requires Real Fixtures' folders (wallet/affiliate) exercise their real 200 happy paths instead of just asserting 401.\n\nThe 'Requires Real Fixtures' folder is for authenticated routes (wallet/affiliate) that need a real JWT. Set the collection variable 'authToken' (a real token from POST /api/auth/login) to exercise the happy path; left blank, those requests still run and correctly assert 401.\n\nKNOWN BUG (not a test mistake): PUT and DELETE /api/user-orders/:orderNumber currently return 500 'syntax error at or near \"LIMIT\"' instead of 404, because the original MySQL code used `UPDATE ... LIMIT 1` / `DELETE ... LIMIT 1`, which Postgres does not support. The db-adapter.js shim does not currently strip LIMIT from UPDATE/DELETE statements. The tests for these two routes assert the CORRECT expected behavior (404) and will fail (red) until that's fixed — this is intentional, so the suite catches the regression rather than enshrining the bug.",
+    "description": "Full API test suite for user-order-service (Postgres/Supabase clone of server/user-order-creation). Run with the matching environment file.\n\nIMPORTANT — this hits the REAL PRODUCTION SUPABASE DATABASE (same DB as admin-service/tracking-service/payment-verification-service). Requests in this collection are deliberately scoped to validation-error paths, 404s on obviously-fake IDs (e.g. 'THIS-ORDER-DOES-NOT-EXIST-XYZ'), and read-only lookups — nothing here creates a real user, order, or affiliate by default.\n\nA few endpoints unavoidably write a low-value log row even on 'empty' requests (fingerprint/collect). That's noted on the request itself.\n\nEXCEPTION — 'Auth — Requires Real Fixtures' contains a Register + Login happy-path pair that runs against ONE fixed fixture account (collection variables 'testEmail' / 'testPassword', defaulted to a dummy @user-order-service.test address). POST /api/auth/register upserts by email (see index.js), so re-running this is idempotent — it never creates a new row after the first run, it just updates the same one. The Login request stores the returned JWT into the 'authToken' collection variable, which is what lets the rest of the 'Requires Real Fixtures' folders (wallet/affiliate) exercise their real 200 happy paths instead of just asserting 401.\n\nThe 'Requires Real Fixtures' folder is for authenticated routes (wallet/affiliate) that need a real JWT. Set the collection variable 'authToken' (a real token from POST /api/auth/login) to exercise the happy path; left blank, those requests still run and correctly assert 401.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "baseUrl", "value": "http://localhost:5003" },
-    { "key": "testOrderNumber", "value": "" },
-    { "key": "testEmail", "value": "postman-fixture-user@user-order-service.test" },
-    { "key": "testPassword", "value": "PostmanFixture123!" },
-    { "key": "authToken", "value": "" }
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5003"
+    },
+    {
+      "key": "testOrderNumber",
+      "value": ""
+    },
+    {
+      "key": "testEmail",
+      "value": "postman-fixture-user@user-order-service.test"
+    },
+    {
+      "key": "testPassword",
+      "value": "PostmanFixture123!"
+    },
+    {
+      "key": "authToken",
+      "value": ""
+    }
   ],
   "item": [
-
     {
       "name": "Health",
       "item": [
@@ -22,37 +36,70 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{baseUrl}}/health", "host": ["{{baseUrl}}"], "path": ["health"] }
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Reports connected DB', () => {",
-            "  const j = pm.response.json();",
-            "  pm.expect(j.ok).to.be.true;",
-            "  pm.expect(j).to.have.property('service', 'user-order-creation');",
-            "  pm.expect(j).to.have.property('db', 'connected');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Reports connected DB', () => {",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j.ok).to.be.true;",
+                  "  pm.expect(j).to.have.property('service', 'user-order-creation');",
+                  "  pm.expect(j).to.have.property('db', 'connected');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Health Check (/api/user-orders/health)",
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{baseUrl}}/api/user-orders/health", "host": ["{{baseUrl}}"], "path": ["api","user-orders","health"] }
+            "url": {
+              "raw": "{{baseUrl}}/api/user-orders/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "user-orders",
+                "health"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Reports connected DB', () => {",
-            "  const j = pm.response.json();",
-            "  pm.expect(j.ok).to.be.true;",
-            "  pm.expect(j).to.have.property('db', 'connected');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Reports connected DB', () => {",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j.ok).to.be.true;",
+                  "  pm.expect(j).to.have.property('db', 'connected');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
-
     {
       "name": "Auth",
       "item": [
@@ -60,173 +107,492 @@
           "name": "Register — Missing name/email/password → 400",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/auth/register", "host": ["{{baseUrl}}"], "path": ["api","auth","register"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "register"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Name, email and password are required');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Name, email and password are required');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Register — Missing DOB/nationality/country → 400",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\"name\":\"Test\",\"email\":\"test@example.com\",\"password\":\"testpass123\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/auth/register", "host": ["{{baseUrl}}"], "path": ["api","auth","register"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"Test\",\"email\":\"test@example.com\",\"password\":\"testpass123\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "register"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "// Does NOT create/update a user — fails validation before any DB write.",
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Date of birth, nationality and country of residence are required');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Does NOT create/update a user — fails validation before any DB write.",
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Date of birth, nationality and country of residence are required');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Login — Missing email/password → 400",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/auth/login", "host": ["{{baseUrl}}"], "path": ["api","auth","login"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Email and password are required');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Email and password are required');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Login — Nonexistent email → 401",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\"email\":\"definitely-does-not-exist-test-xyz-123@example.com\",\"password\":\"wrongpassword\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/auth/login", "host": ["{{baseUrl}}"], "path": ["api","auth","login"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\":\"definitely-does-not-exist-test-xyz-123@example.com\",\"password\":\"wrongpassword\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 401', () => pm.response.to.have.status(401));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Invalid credentials');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Invalid credentials');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Verify — Missing token → 401",
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{baseUrl}}/api/auth/verify", "host": ["{{baseUrl}}"], "path": ["api","auth","verify"] }
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/verify",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "verify"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 401', () => pm.response.to.have.status(401));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Missing token');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Missing token');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Verify — Invalid token → 401",
           "request": {
             "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer garbage-token-123" }],
-            "url": { "raw": "{{baseUrl}}/api/auth/verify", "host": ["{{baseUrl}}"], "path": ["api","auth","verify"] }
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer garbage-token-123"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/verify",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "verify"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 401', () => pm.response.to.have.status(401));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Invalid token');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Invalid token');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Forgot Password — Missing email → 400",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/auth/forgot-password", "host": ["{{baseUrl}}"], "path": ["api","auth","forgot-password"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/forgot-password",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "forgot-password"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Email is required');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Email is required');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Forgot Password — Nonexistent email → 200 (no email sent)",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\"email\":\"definitely-does-not-exist-test-xyz-123@example.com\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/auth/forgot-password", "host": ["{{baseUrl}}"], "path": ["api","auth","forgot-password"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\":\"definitely-does-not-exist-test-xyz-123@example.com\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/forgot-password",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "forgot-password"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "// Always returns success even for unknown emails (anti-enumeration) — no reset token",
-            "// row is written and no email is sent unless the user actually exists.",
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Generic success message', () => {",
-            "  const j = pm.response.json();",
-            "  pm.expect(j.success).to.be.true;",
-            "  pm.expect(j.message).to.include('If an account exists');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Always returns success even for unknown emails (anti-enumeration) — no reset token",
+                  "// row is written and no email is sent unless the user actually exists.",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Generic success message', () => {",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j.success).to.be.true;",
+                  "  pm.expect(j.message).to.include('If an account exists');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Reset Password — Missing token/password → 400",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/auth/reset-password", "host": ["{{baseUrl}}"], "path": ["api","auth","reset-password"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/reset-password",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "reset-password"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Token and password are required');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Token and password are required');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Reset Password — Password too short → 400",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\"token\":\"abc\",\"password\":\"12345\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/auth/reset-password", "host": ["{{baseUrl}}"], "path": ["api","auth","reset-password"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"token\":\"abc\",\"password\":\"12345\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/reset-password",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "reset-password"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Password must be at least 6 characters long');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Password must be at least 6 characters long');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Reset Password — Invalid/expired token → 400",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\"token\":\"nonexistenttoken12345\",\"password\":\"validpassword\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/auth/reset-password", "host": ["{{baseUrl}}"], "path": ["api","auth","reset-password"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"token\":\"nonexistenttoken12345\",\"password\":\"validpassword\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/reset-password",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "reset-password"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Invalid or expired reset token');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Invalid or expired reset token');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
-
     {
       "name": "Auth — Requires Real Fixtures",
       "item": [
@@ -234,75 +600,167 @@
           "name": "Register — Fixed fixture account → 201 (creates/updates real user)",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\"name\":\"Postman Test Fixture\",\"email\":\"{{testEmail}}\",\"password\":\"{{testPassword}}\",\"date_of_birth\":\"1990-01-01\",\"nationality\":\"US\",\"country_of_residence\":\"US\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/auth/register", "host": ["{{baseUrl}}"], "path": ["api","auth","register"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"Postman Test Fixture\",\"email\":\"{{testEmail}}\",\"password\":\"{{testPassword}}\",\"date_of_birth\":\"1990-01-01\",\"nationality\":\"US\",\"country_of_residence\":\"US\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "register"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "// WRITES to production DB — but only ever touches ONE fixed fixture row.",
-            "// /api/auth/register upserts by email (see index.js), so re-running this",
-            "// updates the same user instead of inserting a new one each time.",
-            "pm.test('Status 201', () => pm.response.to.have.status(201));",
-            "pm.test('Returns token and matching user', () => {",
-            "  const j = pm.response.json();",
-            "  pm.expect(j.success).to.be.true;",
-            "  pm.expect(j).to.have.property('token').that.is.a('string');",
-            "  pm.expect(j.user).to.have.property('email', pm.collectionVariables.get('testEmail'));",
-            "});",
-            "pm.collectionVariables.set('authToken', pm.response.json().token);"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// WRITES to production DB — but only ever touches ONE fixed fixture row.",
+                  "// /api/auth/register upserts by email (see index.js), so re-running this",
+                  "// updates the same user instead of inserting a new one each time.",
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "pm.test('Returns token and matching user', () => {",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j.success).to.be.true;",
+                  "  pm.expect(j).to.have.property('token').that.is.a('string');",
+                  "  pm.expect(j.user).to.have.property('email', pm.collectionVariables.get('testEmail'));",
+                  "});",
+                  "pm.collectionVariables.set('authToken', pm.response.json().token);"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Login — Fixed fixture account → 200",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\"email\":\"{{testEmail}}\",\"password\":\"{{testPassword}}\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/auth/login", "host": ["{{baseUrl}}"], "path": ["api","auth","login"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\":\"{{testEmail}}\",\"password\":\"{{testPassword}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "// Depends on the Register request above having run at least once so this",
-            "// fixture account exists with a known password.",
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Returns token and matching user', () => {",
-            "  const j = pm.response.json();",
-            "  pm.expect(j.success).to.be.true;",
-            "  pm.expect(j).to.have.property('token').that.is.a('string');",
-            "  pm.expect(j.user).to.have.property('email', pm.collectionVariables.get('testEmail'));",
-            "});",
-            "// Store the token so the rest of the 'Requires Real Fixtures' requests in this",
-            "// collection can exercise their real 200 happy paths automatically.",
-            "pm.collectionVariables.set('authToken', pm.response.json().token);"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Depends on the Register request above having run at least once so this",
+                  "// fixture account exists with a known password.",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Returns token and matching user', () => {",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j.success).to.be.true;",
+                  "  pm.expect(j).to.have.property('token').that.is.a('string');",
+                  "  pm.expect(j.user).to.have.property('email', pm.collectionVariables.get('testEmail'));",
+                  "});",
+                  "// Store the token so the rest of the 'Requires Real Fixtures' requests in this",
+                  "// collection can exercise their real 200 happy paths automatically.",
+                  "pm.collectionVariables.set('authToken', pm.response.json().token);"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Forgot Password — Existing email (testEmail) → 200 (email sent)",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\"email\":\"{{testEmail}}\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/auth/forgot-password", "host": ["{{baseUrl}}"], "path": ["api","auth","forgot-password"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\":\"{{testEmail}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/forgot-password",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "forgot-password"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "if (!pm.collectionVariables.get('testEmail')) {",
-            "  pm.test('testEmail not set — still 200 generic message (unknown-email path)', () => {",
-            "    pm.response.to.have.status(200);",
-            "    pm.expect(pm.response.json().success).to.be.true;",
-            "  });",
-            "  console.warn('Set collection variable testEmail (a real existing user email) to also cover the reset-token-written / email-sent path.');",
-            "} else {",
-            "  pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "  pm.test('Generic success message (reset token written, email sent)', () => {",
-            "    const j = pm.response.json();",
-            "    pm.expect(j.success).to.be.true;",
-            "    pm.expect(j.message).to.include('If an account exists');",
-            "  });",
-            "}"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('testEmail')) {",
+                  "  pm.test('testEmail not set — still 200 generic message (unknown-email path)', () => {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.json().success).to.be.true;",
+                  "  });",
+                  "  console.warn('Set collection variable testEmail (a real existing user email) to also cover the reset-token-written / email-sent path.');",
+                  "} else {",
+                  "  pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "  pm.test('Generic success message (reset token written, email sent)', () => {",
+                  "    const j = pm.response.json();",
+                  "    pm.expect(j.success).to.be.true;",
+                  "    pm.expect(j.message).to.include('If an account exists');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
-
     {
       "name": "Wallet & Affiliate",
       "item": [
@@ -311,106 +769,273 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{baseUrl}}/api/wallet", "host": ["{{baseUrl}}"], "path": ["api","wallet"] }
+            "url": {
+              "raw": "{{baseUrl}}/api/wallet",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "wallet"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 401', () => pm.response.to.have.status(401));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Missing token');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Missing token');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Wallet — Invalid token → 401",
           "request": {
             "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer garbage-token-123" }],
-            "url": { "raw": "{{baseUrl}}/api/wallet", "host": ["{{baseUrl}}"], "path": ["api","wallet"] }
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer garbage-token-123"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/wallet",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "wallet"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 401', () => pm.response.to.have.status(401));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Invalid token');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Invalid token');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Affiliate Status — No token → 401",
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{baseUrl}}/api/affiliate/status", "host": ["{{baseUrl}}"], "path": ["api","affiliate","status"] }
+            "url": {
+              "raw": "{{baseUrl}}/api/affiliate/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "affiliate",
+                "status"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 401', () => pm.response.to.have.status(401));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Missing token');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Missing token');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Affiliate Request — No token → 401",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/affiliate/request", "host": ["{{baseUrl}}"], "path": ["api","affiliate","request"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/affiliate/request",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "affiliate",
+                "request"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "// Uses the same requireUserAuth middleware as /api/wallet — fails before any DB write.",
-            "pm.test('Status 401', () => pm.response.to.have.status(401));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Missing token');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Uses the same requireUserAuth middleware as /api/wallet — fails before any DB write.",
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Missing token');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Affiliate Dashboard — No token → 401",
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{baseUrl}}/api/affiliate/dashboard", "host": ["{{baseUrl}}"], "path": ["api","affiliate","dashboard"] }
+            "url": {
+              "raw": "{{baseUrl}}/api/affiliate/dashboard",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "affiliate",
+                "dashboard"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 401', () => pm.response.to.have.status(401));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Missing token');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Missing token');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Promo Validate — Missing code → 400",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/promos/validate", "host": ["{{baseUrl}}"], "path": ["api","promos","validate"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/promos/validate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "promos",
+                "validate"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error body', () => {",
-            "  pm.expect(pm.response.json()).to.deep.include({ ok: false, error: 'code is required' });",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error body', () => {",
+                  "  pm.expect(pm.response.json()).to.deep.include({ ok: false, error: 'code is required' });",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Promo Validate — Invalid code → 404",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\"code\":\"THISDOESNOTEXISTXYZ\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/promos/validate", "host": ["{{baseUrl}}"], "path": ["api","promos","validate"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\":\"THISDOESNOTEXISTXYZ\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/promos/validate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "promos",
+                "validate"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 404', () => pm.response.to.have.status(404));",
-            "pm.test('Response body', () => {",
-            "  pm.expect(pm.response.json()).to.deep.equal({ ok: false, valid: false });",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('Response body', () => {",
+                  "  pm.expect(pm.response.json()).to.deep.equal({ ok: false, valid: false });",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
-
     {
       "name": "Wallet & Affiliate — Requires Real Fixtures",
       "item": [
@@ -418,53 +1043,97 @@
           "name": "Wallet — With authToken",
           "request": {
             "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
-            "url": { "raw": "{{baseUrl}}/api/wallet", "host": ["{{baseUrl}}"], "path": ["api","wallet"] }
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/wallet",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "wallet"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "if (!pm.collectionVariables.get('authToken')) {",
-            "  pm.test('authToken not set — expected 401 Missing token', () => {",
-            "    pm.response.to.have.status(401);",
-            "    pm.expect(pm.response.json()).to.have.property('error', 'Missing token');",
-            "  });",
-            "  console.warn('Set collection variable authToken (a real token from POST /api/auth/login) for full coverage.');",
-            "} else {",
-            "  pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "  pm.test('Wallet shape', () => {",
-            "    const j = pm.response.json();",
-            "    pm.expect(j.success).to.be.true;",
-            "    pm.expect(j).to.have.property('balance');",
-            "    pm.expect(j).to.have.property('ledger').that.is.an('array');",
-            "  });",
-            "}"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('authToken')) {",
+                  "  pm.test('authToken not set — expected 401 Missing token', () => {",
+                  "    pm.response.to.have.status(401);",
+                  "    pm.expect(pm.response.json()).to.have.property('error', 'Missing token');",
+                  "  });",
+                  "  console.warn('Set collection variable authToken (a real token from POST /api/auth/login) for full coverage.');",
+                  "} else {",
+                  "  pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "  pm.test('Wallet shape', () => {",
+                  "    const j = pm.response.json();",
+                  "    pm.expect(j.success).to.be.true;",
+                  "    pm.expect(j).to.have.property('balance');",
+                  "    pm.expect(j).to.have.property('ledger').that.is.an('array');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Affiliate Dashboard — With authToken",
           "request": {
             "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
-            "url": { "raw": "{{baseUrl}}/api/affiliate/dashboard", "host": ["{{baseUrl}}"], "path": ["api","affiliate","dashboard"] }
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/affiliate/dashboard",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "affiliate",
+                "dashboard"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "if (!pm.collectionVariables.get('authToken')) {",
-            "  pm.test('authToken not set — expected 401 Missing token', () => {",
-            "    pm.response.to.have.status(401);",
-            "  });",
-            "  console.warn('Set collection variable authToken for full coverage.');",
-            "} else {",
-            "  pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "  pm.test('Response has ok/is_affiliate', () => {",
-            "    const j = pm.response.json();",
-            "    pm.expect(j.ok).to.be.true;",
-            "    pm.expect(j).to.have.property('is_affiliate');",
-            "  });",
-            "}"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('authToken')) {",
+                  "  pm.test('authToken not set — expected 401 Missing token', () => {",
+                  "    pm.response.to.have.status(401);",
+                  "  });",
+                  "  console.warn('Set collection variable authToken for full coverage.');",
+                  "} else {",
+                  "  pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "  pm.test('Response has ok/is_affiliate', () => {",
+                  "    const j = pm.response.json();",
+                  "    pm.expect(j.ok).to.be.true;",
+                  "    pm.expect(j).to.have.property('is_affiliate');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
-
     {
       "name": "Products",
       "item": [
@@ -472,50 +1141,142 @@
           "name": "Klyme Status by ID — Missing product_ids → 400",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/products/klyme-status", "host": ["{{baseUrl}}"], "path": ["api","products","klyme-status"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/products/klyme-status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "products",
+                "klyme-status"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Product IDs array is required');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Product IDs array is required');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Klyme Status by SKU — Missing product_skus → 400",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/products/klyme-status-by-sku", "host": ["{{baseUrl}}"], "path": ["api","products","klyme-status-by-sku"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/products/klyme-status-by-sku",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "products",
+                "klyme-status-by-sku"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Product SKUs array is required');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Product SKUs array is required');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Klyme Status by Name — Missing product_names → 400",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/products/klyme-status-by-name", "host": ["{{baseUrl}}"], "path": ["api","products","klyme-status-by-name"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/products/klyme-status-by-name",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "products",
+                "klyme-status-by-name"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Product names array is required');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Product names array is required');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
-
     {
       "name": "Orders",
       "item": [
@@ -524,114 +1285,256 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{baseUrl}}/api/user-orders", "host": ["{{baseUrl}}"], "path": ["api","user-orders"] }
+            "url": {
+              "raw": "{{baseUrl}}/api/user-orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "user-orders"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 405', () => pm.response.to.have.status(405));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error').that.includes('Method Not Allowed');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 405', () => pm.response.to.have.status(405));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error').that.includes('Method Not Allowed');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
-          "name": "By Email — Missing email → 400",
+          "name": "By Email — No token → 401",
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{baseUrl}}/api/user-orders/by-email", "host": ["{{baseUrl}}"], "path": ["api","user-orders","by-email"] }
+            "url": {
+              "raw": "{{baseUrl}}/api/user-orders/by-email",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "user-orders",
+                "by-email"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Valid email is required');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Missing token');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
-          "name": "By Email — Valid but nonexistent email → 200 empty list",
+          "name": "By Email — Token for another email → 403",
           "request": {
             "method": "GET",
-            "header": [],
-            "url": { "raw": "{{baseUrl}}/api/user-orders/by-email?email=noorder-test-xyz@example.com", "host": ["{{baseUrl}}"], "path": ["api","user-orders","by-email"], "query": [{ "key": "email", "value": "noorder-test-xyz@example.com" }] }
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/user-orders/by-email?email=noorder-test-xyz@example.com",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "user-orders",
+                "by-email"
+              ],
+              "query": [
+                {
+                  "key": "email",
+                  "value": "noorder-test-xyz@example.com"
+                }
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Empty orders array', () => {",
-            "  pm.expect(pm.response.json()).to.deep.equal({ orders: [] });",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// {{userToken}} must be a valid login token for a different email than the one queried.",
+                  "pm.test('Status 403', () => pm.response.to.have.status(403));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Forbidden');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Get by Order Number — Not found → 404",
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{baseUrl}}/api/user-orders/THIS-ORDER-DOES-NOT-EXIST-XYZ", "host": ["{{baseUrl}}"], "path": ["api","user-orders","THIS-ORDER-DOES-NOT-EXIST-XYZ"] }
+            "url": {
+              "raw": "{{baseUrl}}/api/user-orders/THIS-ORDER-DOES-NOT-EXIST-XYZ",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "user-orders",
+                "THIS-ORDER-DOES-NOT-EXIST-XYZ"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 404', () => pm.response.to.have.status(404));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Order not found');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Order not found');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
-          "name": "Update Order — Not found → 404 (KNOWN BUG: currently 500)",
+          "name": "Update Order — route removed → 404",
           "request": {
             "method": "PUT",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\"status\":\"test\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/user-orders/THIS-ORDER-DOES-NOT-EXIST-XYZ", "host": ["{{baseUrl}}"], "path": ["api","user-orders","THIS-ORDER-DOES-NOT-EXIST-XYZ"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"payment_status\":\"received\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/user-orders/ANY-ORDER",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "user-orders",
+                "ANY-ORDER"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "// KNOWN BUG: the underlying SQL is `UPDATE orders SET ... WHERE order_number = ? LIMIT 1`,",
-            "// which is valid MySQL but Postgres does not support LIMIT on UPDATE. The db-adapter.js",
-            "// shim does not currently strip it, so this currently 500s with a syntax error instead",
-            "// of correctly 404ing. This test asserts the CORRECT behavior and will fail until fixed.",
-            "pm.test('Status 404 (order not found)', () => pm.response.to.have.status(404));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Order not found');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Orders cannot be modified through this service; admin-service owns updates.",
+                  "pm.test('Status 404 (route removed)', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
         },
         {
-          "name": "Delete Order — Not found → 404 (KNOWN BUG: currently 500)",
+          "name": "Delete Order — route removed → 404",
           "request": {
             "method": "DELETE",
             "header": [],
-            "url": { "raw": "{{baseUrl}}/api/user-orders/THIS-ORDER-DOES-NOT-EXIST-XYZ", "host": ["{{baseUrl}}"], "path": ["api","user-orders","THIS-ORDER-DOES-NOT-EXIST-XYZ"] }
+            "url": {
+              "raw": "{{baseUrl}}/api/user-orders/ANY-ORDER",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "user-orders",
+                "ANY-ORDER"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "// Same LIMIT-on-DELETE bug as the PUT route above — see collection description.",
-            "pm.test('Status 404 (order not found)', () => pm.response.to.have.status(404));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Order not found');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Orders cannot be deleted by customers; admin-service owns deletion.",
+                  "pm.test('Status 404 (route removed)', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Create Order — Empty body → validation error",
           "request": {
             "method": "POST",
             "header": [],
-            "body": { "mode": "formdata", "formdata": [] },
-            "url": { "raw": "{{baseUrl}}/api/user-orders", "host": ["{{baseUrl}}"], "path": ["api","user-orders"] }
+            "body": {
+              "mode": "formdata",
+              "formdata": []
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/user-orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "user-orders"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "// Pre-existing app behavior (not a Postgres-conversion artifact): the validation helper",
-            "// throws a plain Error for a missing email, which the generic catch-all turns into a 500",
-            "// rather than a 400. Documented here as the actual, verified current behavior.",
-            "pm.test('Status 500 (validation error, no order created)', () => pm.response.to.have.status(500));",
-            "pm.test('Error mentions missing email', () => {",
-            "  const j = pm.response.json();",
-            "  pm.expect(j.success).to.be.false;",
-            "  pm.expect(j.error).to.include('email');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Pre-existing app behavior (not a Postgres-conversion artifact): the validation helper",
+                  "// throws a plain Error for a missing email, which the generic catch-all turns into a 500",
+                  "// rather than a 400. Documented here as the actual, verified current behavior.",
+                  "pm.test('Status 500 (validation error, no order created)', () => pm.response.to.have.status(500));",
+                  "pm.test('Error mentions missing email', () => {",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j.success).to.be.false;",
+                  "  pm.expect(j.error).to.include('email');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
-
     {
       "name": "Payment Capture",
       "item": [
@@ -639,50 +1542,132 @@
           "name": "Validate — Missing token → 400",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/payment-capture/validate", "host": ["{{baseUrl}}"], "path": ["api","payment-capture","validate"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/payment-capture/validate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payment-capture",
+                "validate"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error body', () => {",
-            "  pm.expect(pm.response.json()).to.deep.include({ ok: false, error: 'token is required' });",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error body', () => {",
+                  "  pm.expect(pm.response.json()).to.deep.include({ ok: false, error: 'token is required' });",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Apply Promo — Missing token/promoCode → 400",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/payment-capture/apply-promo", "host": ["{{baseUrl}}"], "path": ["api","payment-capture","apply-promo"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/payment-capture/apply-promo",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payment-capture",
+                "apply-promo"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error body', () => {",
-            "  pm.expect(pm.response.json()).to.deep.include({ ok: false, error: 'token is required' });",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error body', () => {",
+                  "  pm.expect(pm.response.json()).to.deep.include({ ok: false, error: 'token is required' });",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Upload — Missing token/file → 400",
           "request": {
             "method": "POST",
             "header": [],
-            "body": { "mode": "formdata", "formdata": [] },
-            "url": { "raw": "{{baseUrl}}/api/payment-capture/upload", "host": ["{{baseUrl}}"], "path": ["api","payment-capture","upload"] }
+            "body": {
+              "mode": "formdata",
+              "formdata": []
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/payment-capture/upload",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payment-capture",
+                "upload"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error body', () => {",
-            "  pm.expect(pm.response.json()).to.deep.include({ ok: false, error: 'token is required' });",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error body', () => {",
+                  "  pm.expect(pm.response.json()).to.deep.include({ ok: false, error: 'token is required' });",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
-
     {
       "name": "Klyme",
       "item": [
@@ -690,77 +1675,188 @@
           "name": "Create Payment — Missing orderId/amount → 400",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/klyme/create-payment", "host": ["{{baseUrl}}"], "path": ["api","klyme","create-payment"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/klyme/create-payment",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "klyme",
+                "create-payment"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "// Klyme credentials ARE configured in this environment, so this exercises the",
-            "// orderId/amount validation branch rather than the 'credentials not configured' branch.",
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error body', () => {",
-            "  const j = pm.response.json();",
-            "  pm.expect(j.ok).to.be.false;",
-            "  pm.expect(j.error).to.equal('Missing required fields: orderId, amount');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Klyme credentials ARE configured in this environment, so this exercises the",
+                  "// orderId/amount validation branch rather than the 'credentials not configured' branch.",
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error body', () => {",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j.ok).to.be.false;",
+                  "  pm.expect(j.error).to.equal('Missing required fields: orderId, amount');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Create Payment — Nonexistent order → 404",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\"orderId\":\"THIS-ORDER-DOES-NOT-EXIST-XYZ\",\"amount\":10}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/klyme/create-payment", "host": ["{{baseUrl}}"], "path": ["api","klyme","create-payment"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"orderId\":\"THIS-ORDER-DOES-NOT-EXIST-XYZ\",\"amount\":10}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/klyme/create-payment",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "klyme",
+                "create-payment"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 404', () => pm.response.to.have.status(404));",
-            "pm.test('Error body', () => {",
-            "  const j = pm.response.json();",
-            "  pm.expect(j.ok).to.be.false;",
-            "  pm.expect(j.error).to.equal('Order not found');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('Error body', () => {",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j.ok).to.be.false;",
+                  "  pm.expect(j.error).to.equal('Order not found');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Webhook — Missing UUID → 200 ignored",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/klyme/webhook", "host": ["{{baseUrl}}"], "path": ["api","klyme","webhook"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/klyme/webhook",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "klyme",
+                "webhook"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "// Webhooks always return 200 to the payment provider so it doesn't retry-storm us,",
-            "// even when the payload can't be processed.",
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Ignored with reason', () => {",
-            "  const j = pm.response.json();",
-            "  pm.expect(j.ok).to.be.true;",
-            "  pm.expect(j.ignored).to.be.true;",
-            "  pm.expect(j.reason).to.equal('Missing payment UUID');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Webhooks always return 200 to the payment provider so it doesn't retry-storm us,",
+                  "// even when the payload can't be processed.",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Ignored with reason', () => {",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j.ok).to.be.true;",
+                  "  pm.expect(j.ignored).to.be.true;",
+                  "  pm.expect(j.reason).to.equal('Missing payment UUID');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Verify Payment — Nonexistent UUID → 404",
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{baseUrl}}/api/klyme/verify-payment/nonexistent-uuid-123", "host": ["{{baseUrl}}"], "path": ["api","klyme","verify-payment","nonexistent-uuid-123"] }
+            "url": {
+              "raw": "{{baseUrl}}/api/klyme/verify-payment/nonexistent-uuid-123",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "klyme",
+                "verify-payment",
+                "nonexistent-uuid-123"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 404', () => pm.response.to.have.status(404));",
-            "pm.test('Error body', () => {",
-            "  const j = pm.response.json();",
-            "  pm.expect(j.ok).to.be.false;",
-            "  pm.expect(j.error).to.equal('Payment session not found');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('Error body', () => {",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j.ok).to.be.false;",
+                  "  pm.expect(j.error).to.equal('Payment session not found');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
-
     {
       "name": "AabanPay",
       "item": [
@@ -768,85 +1864,216 @@
           "name": "Create Payment — API key not configured → 500",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/aabanpay/create-payment", "host": ["{{baseUrl}}"], "path": ["api","aabanpay","create-payment"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/aabanpay/create-payment",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "aabanpay",
+                "create-payment"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "// AABANPAY_API_KEY is not set in .env.shared, so this is checked before body validation.",
-            "// If AABANPAY_API_KEY is later configured, this test will need updating to expect 400",
-            "// 'Missing required fields: orderId, amount' instead.",
-            "pm.test('Status 500', () => pm.response.to.have.status(500));",
-            "pm.test('Error body', () => {",
-            "  pm.expect(pm.response.json()).to.deep.equal({ ok: false, error: 'AabanPay API key not configured' });",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// AABANPAY_API_KEY is not set in .env.shared, so this is checked before body validation.",
+                  "// If AABANPAY_API_KEY is later configured, this test will need updating to expect 400",
+                  "// 'Missing required fields: orderId, amount' instead.",
+                  "pm.test('Status 500', () => pm.response.to.have.status(500));",
+                  "pm.test('Error body', () => {",
+                  "  pm.expect(pm.response.json()).to.deep.equal({ ok: false, error: 'AabanPay API key not configured' });",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Webhook — Missing session ID → 200 ignored",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/aabanpay/webhook", "host": ["{{baseUrl}}"], "path": ["api","aabanpay","webhook"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/aabanpay/webhook",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "aabanpay",
+                "webhook"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Ignored with reason', () => {",
-            "  const j = pm.response.json();",
-            "  pm.expect(j.ok).to.be.true;",
-            "  pm.expect(j.ignored).to.be.true;",
-            "  pm.expect(j.reason).to.equal('Missing session ID');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Ignored with reason', () => {",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j.ok).to.be.true;",
+                  "  pm.expect(j.ignored).to.be.true;",
+                  "  pm.expect(j.reason).to.equal('Missing session ID');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Verify Payment — API key not configured → 500",
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{baseUrl}}/api/aabanpay/verify-payment/nonexistent-session-123", "host": ["{{baseUrl}}"], "path": ["api","aabanpay","verify-payment","nonexistent-session-123"] }
+            "url": {
+              "raw": "{{baseUrl}}/api/aabanpay/verify-payment/nonexistent-session-123",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "aabanpay",
+                "verify-payment",
+                "nonexistent-session-123"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 500', () => pm.response.to.have.status(500));",
-            "pm.test('Error body', () => {",
-            "  pm.expect(pm.response.json()).to.deep.equal({ ok: false, error: 'AabanPay API key not configured' });",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 500', () => pm.response.to.have.status(500));",
+                  "pm.test('Error body', () => {",
+                  "  pm.expect(pm.response.json()).to.deep.equal({ ok: false, error: 'AabanPay API key not configured' });",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Charge — API key not configured → 500",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/user-orders/aabanpay/charge", "host": ["{{baseUrl}}"], "path": ["api","user-orders","aabanpay","charge"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/user-orders/aabanpay/charge",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "user-orders",
+                "aabanpay",
+                "charge"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 500', () => pm.response.to.have.status(500));",
-            "pm.test('Error body', () => {",
-            "  pm.expect(pm.response.json()).to.deep.equal({ ok: false, error: 'AabanPay API key not configured' });",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 500', () => pm.response.to.have.status(500));",
+                  "pm.test('Error body', () => {",
+                  "  pm.expect(pm.response.json()).to.deep.equal({ ok: false, error: 'AabanPay API key not configured' });",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Callback — Missing order_id → 400 (plain text)",
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{baseUrl}}/api/user-orders/aabanpay/callback", "host": ["{{baseUrl}}"], "path": ["api","user-orders","aabanpay","callback"] }
+            "url": {
+              "raw": "{{baseUrl}}/api/user-orders/aabanpay/callback",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "user-orders",
+                "aabanpay",
+                "callback"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "// This route responds with a plain-text body, not JSON.",
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Body text', () => {",
-            "  pm.expect(pm.response.text()).to.equal('Missing order_id');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// This route responds with a plain-text body, not JSON.",
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Body text', () => {",
+                  "  pm.expect(pm.response.text()).to.equal('Missing order_id');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
-
     {
       "name": "Uploads & Verification",
       "item": [
@@ -855,124 +2082,307 @@
           "request": {
             "method": "POST",
             "header": [],
-            "body": { "mode": "formdata", "formdata": [] },
-            "url": { "raw": "{{baseUrl}}/api/user-orders/spot-a-fake/submit", "host": ["{{baseUrl}}"], "path": ["api","user-orders","spot-a-fake","submit"] }
+            "body": {
+              "mode": "formdata",
+              "formdata": []
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/user-orders/spot-a-fake/submit",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "user-orders",
+                "spot-a-fake",
+                "submit"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('message', 'Location data is required.');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('message', 'Location data is required.');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
-          "name": "Spot-a-Fake — List submissions",
+          "name": "Spot-a-Fake — List submissions — no token → 401",
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{baseUrl}}/api/user-orders/spot-a-fake/submissions", "host": ["{{baseUrl}}"], "path": ["api","user-orders","spot-a-fake","submissions"] }
+            "url": {
+              "raw": "{{baseUrl}}/api/user-orders/spot-a-fake/submissions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "user-orders",
+                "spot-a-fake",
+                "submissions"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Has submissions array', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('submissions').that.is.an('array');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Admin-only since the security hardening (login token with role=admin). Without a token: 401.",
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('Error message', () => { pm.expect(pm.response.json()).to.have.property('error', 'Missing token'); });"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Train Model — Upload with no photos → 400",
           "request": {
             "method": "POST",
             "header": [],
-            "body": { "mode": "formdata", "formdata": [] },
-            "url": { "raw": "{{baseUrl}}/api/user-orders/train-model/upload", "host": ["{{baseUrl}}"], "path": ["api","user-orders","train-model","upload"] }
+            "body": {
+              "mode": "formdata",
+              "formdata": []
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/user-orders/train-model/upload",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "user-orders",
+                "train-model",
+                "upload"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('message', 'No photos uploaded.');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('message', 'No photos uploaded.');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Verify Product — Upload with no photo → 400",
           "request": {
             "method": "POST",
             "header": [],
-            "body": { "mode": "formdata", "formdata": [] },
-            "url": { "raw": "{{baseUrl}}/api/user-orders/verify-product/upload", "host": ["{{baseUrl}}"], "path": ["api","user-orders","verify-product","upload"] }
+            "body": {
+              "mode": "formdata",
+              "formdata": []
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/user-orders/verify-product/upload",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "user-orders",
+                "verify-product",
+                "upload"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('message', 'No image uploaded.');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('message', 'No image uploaded.');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
-          "name": "Verify Product — List submissions",
+          "name": "Verify Product — List submissions — no token → 401",
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{baseUrl}}/api/user-orders/verify-product/submissions", "host": ["{{baseUrl}}"], "path": ["api","user-orders","verify-product","submissions"] }
+            "url": {
+              "raw": "{{baseUrl}}/api/user-orders/verify-product/submissions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "user-orders",
+                "verify-product",
+                "submissions"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Has submissions array', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('submissions').that.is.an('array');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Admin-only since the security hardening (login token with role=admin). Without a token: 401.",
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('Error message', () => { pm.expect(pm.response.json()).to.have.property('error', 'Missing token'); });"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Verify Product — Delete with no password → 403",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/user-orders/verify-product/delete", "host": ["{{baseUrl}}"], "path": ["api","user-orders","verify-product","delete"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/user-orders/verify-product/delete",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "user-orders",
+                "verify-product",
+                "delete"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 403', () => pm.response.to.have.status(403));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('message', 'Incorrect password.');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 403', () => pm.response.to.have.status(403));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('message', 'Incorrect password.');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Fingerprint — Collect (writes a log row)",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/user-orders/fingerprint/collect", "host": ["{{baseUrl}}"], "path": ["api","user-orders","fingerprint","collect"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/user-orders/fingerprint/collect",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "user-orders",
+                "fingerprint",
+                "collect"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "// NOTE: unlike every other request in this collection, this one has a side effect —",
-            "// it always accepts and inserts a low-value tracking row (device_fingerprints table)",
-            "// even with an empty body. Not a validation endpoint; run sparingly.",
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Accepted', () => {",
-            "  pm.expect(pm.response.json()).to.deep.equal({ ok: true });",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// NOTE: unlike every other request in this collection, this one has a side effect —",
+                  "// it always accepts and inserts a low-value tracking row (device_fingerprints table)",
+                  "// even with an empty body. Not a validation endpoint; run sparingly.",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Accepted', () => {",
+                  "  pm.expect(pm.response.json()).to.deep.equal({ ok: true });",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
-          "name": "Fingerprint — List",
+          "name": "Fingerprint — List — no token → 401",
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{baseUrl}}/api/user-orders/fingerprint/list", "host": ["{{baseUrl}}"], "path": ["api","user-orders","fingerprint","list"] }
+            "url": {
+              "raw": "{{baseUrl}}/api/user-orders/fingerprint/list",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "user-orders",
+                "fingerprint",
+                "list"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Has fingerprints array', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('fingerprints').that.is.an('array');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Admin-only since the security hardening (login token with role=admin). Without a token: 401.",
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('Error message', () => { pm.expect(pm.response.json()).to.have.property('error', 'Missing token'); });"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
-
     {
       "name": "AI Chat & Newsletter",
       "item": [
@@ -980,68 +2390,177 @@
           "name": "AI Chat — Missing message → 400",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/ai-chat", "host": ["{{baseUrl}}"], "path": ["api","ai-chat"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ai-chat",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "ai-chat"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "// GEMINI_API_KEY is configured in this environment, so this exercises the 'message",
-            "// required' validation branch rather than the 503 'AI chat is not configured' branch.",
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Message is required');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// GEMINI_API_KEY is configured in this environment, so this exercises the 'message",
+                  "// required' validation branch rather than the 503 'AI chat is not configured' branch.",
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Message is required');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "AI Chat — Suggestions",
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{baseUrl}}/api/ai-chat/suggestions", "host": ["{{baseUrl}}"], "path": ["api","ai-chat","suggestions"] }
+            "url": {
+              "raw": "{{baseUrl}}/api/ai-chat/suggestions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "ai-chat",
+                "suggestions"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Has suggestions array', () => {",
-            "  const j = pm.response.json();",
-            "  pm.expect(j).to.have.property('suggestions').that.is.an('array').with.length.above(0);",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Has suggestions array', () => {",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j).to.have.property('suggestions').that.is.an('array').with.length.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Newsletter — Invalid email → 400",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\"email\":\"not-an-email\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/newsletter/subscribe", "host": ["{{baseUrl}}"], "path": ["api","newsletter","subscribe"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\":\"not-an-email\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/newsletter/subscribe",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "newsletter",
+                "subscribe"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Please enter a valid email address.');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Please enter a valid email address.');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Newsletter — Missing consent → 400",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\"email\":\"test@example.com\",\"consent\":false}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/newsletter/subscribe", "host": ["{{baseUrl}}"], "path": ["api","newsletter","subscribe"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\":\"test@example.com\",\"consent\":false}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/newsletter/subscribe",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "newsletter",
+                "subscribe"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "// No row is written and no email is sent — consent check runs before the INSERT.",
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error message', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('error', 'Consent is required to enter the giveaway.');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No row is written and no email is sent — consent check runs before the INSERT.",
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error message', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('error', 'Consent is required to enter the giveaway.');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
-
     {
       "name": "Misc",
       "item": [
@@ -1050,67 +2569,130 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{baseUrl}}/api/client-ip", "host": ["{{baseUrl}}"], "path": ["api","client-ip"] }
+            "url": {
+              "raw": "{{baseUrl}}/api/client-ip",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "client-ip"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Has ip field', () => {",
-            "  pm.expect(pm.response.json()).to.have.property('ip');",
-            "});"
-          ]}}]
-        },
-        {
-          "name": "Test IP",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": { "raw": "{{baseUrl}}/api/test-ip", "host": ["{{baseUrl}}"], "path": ["api","test-ip"] }
-          },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 200', () => pm.response.to.have.status(200));",
-            "pm.test('Success shape', () => {",
-            "  const j = pm.response.json();",
-            "  pm.expect(j.success).to.be.true;",
-            "  pm.expect(j).to.have.property('clientIp');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Has ip field', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('ip');",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Fengyu Check — Missing fields → 400",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/fengyu/check", "host": ["{{baseUrl}}"], "path": ["api","fengyu","check"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/fengyu/check",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "fengyu",
+                "check"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error body', () => {",
-            "  const j = pm.response.json();",
-            "  pm.expect(j.error).to.equal('Missing required fields');",
-            "  pm.expect(j.required).to.deep.equal(['userAgent','visitUrl','timestamp']);",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error body', () => {",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j.error).to.equal('Missing required fields');",
+                  "  pm.expect(j.required).to.deep.equal(['userAgent','visitUrl','timestamp']);",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Fengyu Check (user-orders alias) — Missing fields → 400",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseUrl}}/api/user-orders/fengyu/check", "host": ["{{baseUrl}}"], "path": ["api","user-orders","fengyu","check"] }
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/user-orders/fengyu/check",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "user-orders",
+                "fengyu",
+                "check"
+              ]
+            }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "// Same handler as /api/fengyu/check, just mounted under a second path.",
-            "pm.test('Status 400', () => pm.response.to.have.status(400));",
-            "pm.test('Error body', () => {",
-            "  const j = pm.response.json();",
-            "  pm.expect(j.error).to.equal('Missing required fields');",
-            "});"
-          ]}}]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Same handler as /api/fengyu/check, just mounted under a second path.",
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error body', () => {",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j.error).to.equal('Missing required fields');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     }
-
   ]
 }
